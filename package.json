@@ -6,6 +6,14 @@
   "description": "Minimal MCP server exposing Generect Live API tools.",
   "license": "MIT",
   "main": "dist/server.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/generect/generect_mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/generect/generect_mcp/issues"
+  },
+  "homepage": "https://github.com/generect/generect_mcp#readme",
   "scripts": {
     "dev": "tsx src/server.ts",
     "build": "tsc",
