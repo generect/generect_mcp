@@ -34,10 +34,11 @@ npm run build && npm start
 
 ### Tools
 
-- `search_leads`: Search for leads by ICP filters
-- `search_companies`: Search for companies by ICP filters
-- `generate_email`: Generate email by first/last name and domain
-- `get_lead_by_url`: Get LinkedIn lead by profile URL
+- `search_leads`: Search for leads by ICP filters (supports `timeout_ms`)
+- `search_companies`: Search for companies by ICP filters (supports `timeout_ms`)
+- `generate_email`: Generate email by first/last name and domain (supports `timeout_ms`)
+- `get_lead_by_url`: Get LinkedIn lead by profile URL (supports `timeout_ms`)
+- `health`: Quick health check against the API (optional `url`, supports `timeout_ms`)
 
 ### Cursor integration (settings.json excerpt)
 

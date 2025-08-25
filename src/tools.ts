@@ -68,6 +68,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       offset: z.number().describe('Offset for pagination').optional(),
       max_items: z.number().describe('Maximum items to include in response (local trim)').optional(),
       compact: z.boolean().describe('Return compact summary instead of full JSON').optional(),
+      timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args: any) => {
       if (debug) console.error('[mcp] search_leads args:', JSON.stringify(args));
@@ -109,6 +110,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       max_items: z.number().describe('Maximum items to include in response (local trim)').optional(),
       compact: z.boolean().describe('Return compact summary instead of full JSON').optional(),
       fallback_from_leads: z.boolean().describe('If no companies, derive from leads by keywords').optional(),
+      timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args: any) => {
       if (debug) console.error('[mcp] search_companies args:', JSON.stringify(args));
@@ -172,6 +174,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       first_name: z.string().describe('First name of the person'),
       last_name: z.string().describe('Last name of the person'),
       domain: z.string().describe('Company domain without protocol (e.g., generect.com)'),
+      timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args: any) => {
       if (debug) console.error('[mcp] generate_email args:', JSON.stringify(args));
@@ -204,6 +207,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       inexact_company: z.boolean().describe('Allow inexact company matching').optional(),
       people_also_viewed: z.boolean().describe('Include people also viewed').optional(),
       posts: z.boolean().describe('Include posts data').optional(),
+      timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args: any) => {
       if (debug) console.error('[mcp] get_lead_by_url args:', JSON.stringify(args));
@@ -224,6 +228,43 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         return jsonTextContent(JSON.parse(text));
       } catch (err: unknown) {
         return jsonTextContent({ error: String(err) });
+      }
+    }
+  );
+
+  // 5. Health check
+  server.tool(
+    'health',
+    'Health check Generect API via a quick lead-by-link request',
+    {
+      url: z.string().describe('LinkedIn profile URL to validate (defaults to a public profile)').optional(),
+      timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
+    },
+    async (args: any) => {
+      if (debug) console.error('[mcp] health args:', JSON.stringify(args));
+      const started = Date.now();
+      const testUrl = typeof args?.url === 'string' && args.url.trim()
+        ? args.url
+        : 'https://www.linkedin.com/in/satyanadella/';
+      try {
+        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_link/`, {
+          method: 'POST',
+          headers: { Authorization: authHeader, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: testUrl }),
+        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        const text = await res.text();
+        let data: any = undefined;
+        try { data = JSON.parse(text); } catch {}
+        const ok = !!data?.lead?.linkedin_url;
+        const payload = {
+          ok,
+          status: res.status,
+          ms: Date.now() - started,
+          sample: data?.lead?.linkedin_url ?? null,
+        };
+        return jsonTextContent(payload);
+      } catch (err: unknown) {
+        return jsonTextContent({ ok: false, error: String(err), ms: Date.now() - started });
       }
     }
   );
