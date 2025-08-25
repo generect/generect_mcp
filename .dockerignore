@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.gitignore
+Dockerfile
+npm-debug.log*
+yarn-error.log*
+.env
+.env.*
+scripts
+README.md
+LICENSE

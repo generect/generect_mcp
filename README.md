@@ -78,6 +78,48 @@ Add to `~/.claude/claude_desktop_config.json` (or via UI → MCP Servers):
 }
 ```
 
+### Docker
+
+Build locally:
+
+```bash
+docker build -t ghcr.io/generect/generect_mcp:local .
+```
+
+Run the server in a container:
+
+```bash
+docker run --rm \
+  -e GENERECT_API_BASE=https://api.generect.com \
+  -e GENERECT_API_KEY="Token <api-key>" \
+  ghcr.io/generect/generect_mcp:local
+```
+
+### Remote over SSH (advanced)
+
+Some MCP clients allow spawning the server via SSH, using stdio over the SSH session. Example config:
+
+```json
+{
+  "mcpServers": {
+    "generect-remote": {
+      "command": "ssh",
+      "args": [
+        "user@remote-host",
+        "-T",
+        "node",
+        "/opt/generect_mcp/dist/server.js"
+      ],
+      "env": {
+        "GENERECT_API_BASE": "https://api.generect.com",
+        "GENERECT_API_KEY": "Token <api-key>",
+        "GENERECT_TIMEOUT_MS": "60000"
+      }
+    }
+  }
+}
+```
+
 ### Local testing helpers
 
 - Run a simple health check against the API:
