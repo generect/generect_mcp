@@ -27,6 +27,8 @@ ENV NODE_ENV=production \
     GENERECT_API_BASE=https://api.generect.com \
     GENERECT_TIMEOUT_MS=60000
 
+EXPOSE 3000
+
 CMD ["node", "dist/server.js"]
 
 

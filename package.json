@@ -16,24 +16,32 @@
   "homepage": "https://github.com/generect/generect_mcp#readme",
   "scripts": {
     "dev": "tsx src/server.ts",
+    "dev:http": "tsx src/http.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "start:http": "node dist/http.js",
     "mcp:client": "tsx scripts/mcp-client.ts",
-    "health": "tsx scripts/health.ts"
+    "health": "tsx scripts/health.ts",
+    "probe": "tsx scripts/probe.ts"
+  },
+  "bin": {
+    "generect-mcp": "dist/cli.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.4.0",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "express": "^4.19.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.23",
     "@types/node": "^22.7.4",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3"
   }
 }
-
-
