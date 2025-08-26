@@ -4,13 +4,9 @@ Minimal MCP server exposing Generect Live API tools.
 
 ### Quickstart
 
-1) Install dependencies
+1) Requirements: Node >= 18
 
-```bash
-npm install
-```
-
-2) Configure environment (via your MCP client settings or a local `.env`):
+2) Configure environment (usually via your MCP client settings):
 
 ```bash
 GENERECT_API_BASE=https://api.generect.com
@@ -20,13 +16,14 @@ GENERECT_TIMEOUT_MS=60000
 
 Note: If you provide a raw key without the `Token ` prefix, the server will add it automatically.
 
-3) Dev run
+3) Local dev (optional)
 
 ```bash
+npm install
 npm run dev
 ```
 
-4) Build and start
+4) Build and start (stdio server)
 
 ```bash
 npm run build && npm start
@@ -60,14 +57,14 @@ npm run build && npm start
 
 ### Claude Desktop (MCP) setup
 
-Add to `~/.claude/claude_desktop_config.json` (or via UI → MCP Servers):
+Add to `~/.claude/claude_desktop_config.json` (or via UI → MCP Servers). Recommended: run via npx so users don't install anything globally.
 
 ```json
 {
   "mcpServers": {
     "generect-api": {
-      "command": "node",
-      "args": ["dist/server.js"],
+      "command": "npx",
+      "args": ["-y", "generect-ultimate-mcp@latest"],
       "env": {
         "GENERECT_API_BASE": "https://api.generect.com",
         "GENERECT_API_KEY": "Token <api-key>",
@@ -77,6 +74,27 @@ Add to `~/.claude/claude_desktop_config.json` (or via UI → MCP Servers):
     }
   }
 }
+```
+
+macOS note: If Claude shows "spawn npx ENOENT" or launches an older Node via nvm, set `command` to the absolute npx path and/or override PATH:
+
+```json
+{
+  "command": "/usr/local/bin/npx",
+  "env": { "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" }
+}
+```
+
+Alternative without npx:
+
+```bash
+npm i -g generect-ultimate-mcp
+```
+
+Then use:
+
+```json
+{ "command": "/usr/local/bin/generect-mcp", "args": [] }
 ```
 
 ### Docker
@@ -126,7 +144,7 @@ Some MCP clients allow spawning the server via SSH, using stdio over the SSH ses
 - Run a simple health check against the API:
 
 ```bash
-npm run health -- --key=<api-key>
+npm run health -- <api-key>
 ```
 
 - Call tools via a local MCP client:

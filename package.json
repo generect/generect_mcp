@@ -1,11 +1,18 @@
 {
   "name": "generect-ultimate-mcp",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Minimal MCP server exposing Generect Live API tools.",
   "license": "MIT",
   "main": "dist/server.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/generect/generect_mcp.git"
