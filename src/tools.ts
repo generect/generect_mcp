@@ -3,6 +3,20 @@ import { z } from 'zod';
 
 type Fetcher = typeof fetch;
 
+const normalizeToken = (value?: string | null): string | null => {
+  if (!value) return null;
+  let token = value.trim();
+  if (!token) return null;
+  while (token.toLowerCase().startsWith('bearer ')) {
+    token = token.slice(7).trim();
+  }
+  while (token.toLowerCase().startsWith('token ')) {
+    token = token.slice(6).trim();
+  }
+  if (!token) return null;
+  return `Token ${token}`;
+};
+
 function jsonTextContent(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
 }
@@ -51,14 +65,15 @@ async function fetchWithTimeout(
 export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, apiKey: string) {
   function resolveAuthHeader(extra: any): string {
     const header = extra?.requestInfo?.headers?.authorization as string | undefined;
-    if (header && header.trim()) {
-      return header.startsWith('Token ') ? header : `Token ${header}`;
+    const normalizedHeader = normalizeToken(header);
+    if (normalizedHeader) {
+      return normalizedHeader;
     }
-    const fallback = apiKey || '';
+    const fallback = normalizeToken(apiKey);
     if (!fallback) {
       throw new Error('Authorization header is required');
     }
-    return fallback.startsWith('Token ') ? fallback : `Token ${fallback}`;
+    return fallback;
   }
   const defaultTimeoutMs = Number(process.env.GENERECT_TIMEOUT_MS || '120000');
   const debug = process.env.MCP_DEBUG === '1' || process.env.MCP_DEBUG === 'true';

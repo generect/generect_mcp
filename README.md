@@ -55,6 +55,10 @@ Replace:
 - `your-app-name.onrender.com` with your Render URL
 - `<YOUR_GENERECT_API_KEY>` with your Generect API key
 
+### OpenAI Agent Builder
+
+When adding the remote MCP server in Agent Builder, choose **Bearer Token** authentication and paste **only** your raw Generect API key (without additional `Bearer` or `Token` prefixes). The server will normalize whatever the builder sends, so providing the plain key avoids duplicated prefixes that can cause authentication failures.
+
 ### Claude API (MCP Connector)
 
 ```bash

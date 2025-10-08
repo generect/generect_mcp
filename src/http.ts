@@ -13,27 +13,61 @@ const app = express();
 app.use(express.json());
 app.use(cors({ origin: '*', exposedHeaders: ['Mcp-Session-Id'] }));
 
+// Normalize Authorization header values so we accept Bearer/Token/plain API keys.
+const normalizeToken = (value?: string | null): string | null => {
+  if (!value) return null;
+  let token = value.trim();
+  if (!token) return null;
+
+  // Strip any number of repeated Bearer/Token prefixes that might have been added by clients.
+  while (token.toLowerCase().startsWith('bearer ')) {
+    token = token.slice(7).trim();
+  }
+  while (token.toLowerCase().startsWith('token ')) {
+    token = token.slice(6).trim();
+  }
+
+  if (!token) return null;
+  return `Token ${token}`;
+};
+
 // Extract and validate Generect API key from Authorization header
 const extractApiKey = (req: Request): string | null => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return null;
-  }
-
-  const token = authHeader.substring(7);
-  // Ensure it has Token prefix for Generect API
-  return token.startsWith('Token ') ? token : `Token ${token}`;
+  return normalizeToken(authHeader);
 };
 
 const transports = new Map<string, any>();
 const sessionApiKeys = new Map<string, string>();
+
+const looksLikeInitializeRequest = (body: unknown): boolean => {
+  if (isInitializeRequest(body)) {
+    return true;
+  }
+  if (!body || typeof body !== 'object') {
+    return false;
+  }
+  const candidate = body as Record<string, unknown>;
+  const method = candidate.method;
+  if (typeof method !== 'string') {
+    return false;
+  }
+  if (method.toLowerCase() !== 'initialize') {
+    return false;
+  }
+  const params = candidate.params;
+  if (params !== undefined && typeof params !== 'object') {
+    return false;
+  }
+  return true;
+};
 
 // Main MCP endpoint - POST for client messages
 app.post('/mcp', async (req: Request, res: Response) => {
   const sessionId = (req.headers['mcp-session-id'] as string | undefined) ?? undefined;
   let transport = sessionId ? transports.get(sessionId) : undefined;
 
-  if (!transport && isInitializeRequest(req.body)) {
+  if (!transport && looksLikeInitializeRequest(req.body)) {
     const clientApiKey = extractApiKey(req);
     if (!clientApiKey) {
       return res.status(401).json({
