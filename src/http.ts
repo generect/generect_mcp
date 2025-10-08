@@ -31,6 +31,7 @@ const sessionApiKeys = new Map<string, string>();
 // Main MCP endpoint - POST for client messages
 app.post('/mcp', async (req: Request, res: Response) => {
   const sessionId = (req.headers['mcp-session-id'] as string | undefined) ?? undefined;
+
   let transport = sessionId ? transports.get(sessionId) : undefined;
 
   if (!transport && isInitializeRequest(req.body)) {
@@ -43,15 +44,15 @@ app.post('/mcp', async (req: Request, res: Response) => {
       });
     }
 
-    transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => randomUUID() });
+    const newSessionId = randomUUID();
+    transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => newSessionId });
     const server = new McpServer({ name: 'generect-api', version: '1.0.0' });
     registerTools(server, fetch, apiBase, clientApiKey);
     await server.connect(transport);
 
-    if (transport.sessionId) {
-      transports.set(transport.sessionId, transport);
-      sessionApiKeys.set(transport.sessionId, clientApiKey);
-    }
+    // Store transport using the newSessionId we generated, not transport.sessionId (which may be undefined)
+    transports.set(newSessionId, transport);
+    sessionApiKeys.set(newSessionId, clientApiKey);
   }
 
   if (!transport) {
