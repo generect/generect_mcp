@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: generect-mcp
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node dist/http.js
+    envVars:
+      - key: GENERECT_API_BASE
+        value: https://api.generect.com
+      - key: MCP_PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /health

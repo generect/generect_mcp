@@ -2,9 +2,9 @@
   "name": "generect-ultimate-mcp",
   "version": "0.1.0",
   "type": "module",
-  "description": "Minimal MCP server exposing Generect Live API tools.",
+  "description": "Remote MCP server exposing Generect Live API tools.",
   "license": "MIT",
-  "main": "dist/server.js",
+  "main": "dist/http.js",
   "files": [
     "dist",
     "README.md",
@@ -22,17 +22,11 @@
   },
   "homepage": "https://github.com/generect/generect_mcp#readme",
   "scripts": {
-    "dev": "tsx src/server.ts",
     "dev:http": "tsx src/http.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
     "start:http": "node dist/http.js",
-    "mcp:client": "tsx scripts/mcp-client.ts",
     "health": "tsx scripts/health.ts",
-    "probe": "tsx scripts/probe.ts"
-  },
-  "bin": {
-    "generect-mcp": "dist/cli.js"
+    "test:auth": "tsx scripts/test-auth.ts"
   },
   "engines": {
     "node": ">=18"

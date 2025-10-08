@@ -25,10 +25,8 @@ COPY --from=build /app/dist ./dist
 
 ENV NODE_ENV=production \
     GENERECT_API_BASE=https://api.generect.com \
-    GENERECT_TIMEOUT_MS=60000
+    MCP_PORT=3000
 
 EXPOSE 3000
 
-CMD ["node", "dist/server.js"]
-
-
+CMD ["node", "dist/http.js"]

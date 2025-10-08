@@ -1,155 +1,176 @@
-## Generect Live API MCP Server
+## Generect Live API - Remote MCP Server
 
-Minimal MCP server exposing Generect Live API tools.
-
-### Quickstart
-
-1) Requirements: Node >= 18
-
-2) Configure environment (usually via your MCP client settings):
-
-```bash
-GENERECT_API_BASE=https://api.generect.com
-GENERECT_API_KEY=Token <api-key>
-GENERECT_TIMEOUT_MS=60000
-```
-
-Note: If you provide a raw key without the `Token ` prefix, the server will add it automatically.
-
-3) Local dev (optional)
-
-```bash
-npm install
-npm run dev
-```
-
-4) Build and start (stdio server)
-
-```bash
-npm run build && npm start
-```
+Remote MCP server exposing Generect Live API tools. Users connect with their own API keys.
 
 ### Tools
 
-- `search_leads`: Search for leads by ICP filters (supports `timeout_ms`)
-- `search_companies`: Search for companies by ICP filters (supports `timeout_ms`)
-- `generate_email`: Generate email by first/last name and domain (supports `timeout_ms`)
-- `get_lead_by_url`: Get LinkedIn lead by profile URL (supports `timeout_ms`)
-- `health`: Quick health check against the API (optional `url`, supports `timeout_ms`)
+- `search_leads`: Search for leads by ICP filters
+- `search_companies`: Search for companies by ICP filters
+- `generate_email`: Generate email by first/last name and domain
+- `get_lead_by_url`: Get LinkedIn lead by profile URL
+- `health`: Health check against the API
 
-### Cursor integration (settings.json excerpt)
+All tools support `timeout_ms` parameter.
 
-```json
-{
-  "mcpServers": {
-    "generect-liveapi": {
-      "command": "node",
-      "args": ["./node_modules/tsx/dist/cli.mjs", "src/server.ts"],
-      "env": {
-        "GENERECT_API_BASE": "https://api.generect.com",
-        "GENERECT_API_KEY": "Token <api-key>",
-        "GENERECT_TIMEOUT_MS": "60000"
-      }
-    }
-  }
-}
-```
+---
 
-### Claude Desktop (MCP) setup
+## Deploy to Render
 
-Add to `~/.claude/claude_desktop_config.json` (or via UI → MCP Servers). Recommended: run via npx so users don't install anything globally.
+1. Fork this repo to GitHub
+2. Go to [Render Dashboard](https://dashboard.render.com/)
+3. Click **New** → **Blueprint**
+4. Connect your GitHub repo
+5. Render auto-deploys using `render.yaml`
+
+Your server will be at: `https://your-app-name.onrender.com/mcp`
+
+**Manual deployment:**
+- Runtime: **Node**
+- Build: `npm install && npm run build`
+- Start: `node dist/http.js`
+- Health Check: `/health`
+
+---
+
+## Usage
+
+### Claude Desktop
+
+Add to `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "generect-api": {
-      "command": "npx",
-      "args": ["-y", "generect-ultimate-mcp@latest"],
-      "env": {
-        "GENERECT_API_BASE": "https://api.generect.com",
-        "GENERECT_API_KEY": "Token <api-key>",
-        "GENERECT_TIMEOUT_MS": "60000",
-        "MCP_DEBUG": "0"
+      "url": "https://your-app-name.onrender.com/mcp",
+      "headers": {
+        "Authorization": "Bearer Token <YOUR_GENERECT_API_KEY>"
       }
     }
   }
 }
 ```
 
-macOS note: If Claude shows "spawn npx ENOENT" or launches an older Node via nvm, set `command` to the absolute npx path and/or override PATH:
+Replace:
+- `your-app-name.onrender.com` with your Render URL
+- `<YOUR_GENERECT_API_KEY>` with your Generect API key
 
-```json
-{
-  "command": "/usr/local/bin/npx",
-  "env": { "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" }
-}
-```
-
-Alternative without npx:
+### Claude API (MCP Connector)
 
 ```bash
-npm i -g generect-ultimate-mcp
+curl https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: mcp-client-2025-04-04" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-3-7-sonnet-20250219",
+    "max_tokens": 1024,
+    "messages": [{
+      "role": "user",
+      "content": "Search for 10 leads in tech companies"
+    }],
+    "mcp_servers": [{
+      "url": "https://your-app-name.onrender.com/mcp",
+      "authorization_token": "Token <your-generect-api-key>"
+    }]
+  }'
 ```
 
-Then use:
+### MCP Inspector
 
-```json
-{ "command": "/usr/local/bin/generect-mcp", "args": [] }
-```
-
-### Docker
-
-Build locally:
+Test your server:
 
 ```bash
-docker build -t ghcr.io/generect/generect_mcp:local .
+npx @modelcontextprotocol/inspector \
+  --transport streamableHttp \
+  --url https://your-app-name.onrender.com/mcp \
+  --header "Authorization: Bearer Token <your-generect-api-key>"
 ```
 
-Run the server in a container:
+### Custom MCP Client
 
-```bash
-docker run --rm \
-  -e GENERECT_API_BASE=https://api.generect.com \
-  -e GENERECT_API_KEY="Token <api-key>" \
-  ghcr.io/generect/generect_mcp:local
-```
+```typescript
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-### Remote over SSH (advanced)
-
-Some MCP clients allow spawning the server via SSH, using stdio over the SSH session. Example config:
-
-```json
-{
-  "mcpServers": {
-    "generect-remote": {
-      "command": "ssh",
-      "args": [
-        "user@remote-host",
-        "-T",
-        "node",
-        "/opt/generect_mcp/dist/server.js"
-      ],
-      "env": {
-        "GENERECT_API_BASE": "https://api.generect.com",
-        "GENERECT_API_KEY": "Token <api-key>",
-        "GENERECT_TIMEOUT_MS": "60000"
-      }
-    }
+const transport = new StreamableHTTPClientTransport({
+  url: 'https://your-app-name.onrender.com/mcp',
+  headers: {
+    'Authorization': 'Bearer Token <your-generect-api-key>'
   }
-}
+});
+
+const client = new Client({
+  name: 'my-client',
+  version: '1.0.0'
+}, {
+  capabilities: {}
+});
+
+await client.connect(transport);
+const tools = await client.listTools();
 ```
 
-### Local testing helpers
+---
 
-- Run a simple health check against the API:
+## Local Development
 
 ```bash
+npm install
+npm run dev:http   # Start HTTP server on port 3000
+npm run build      # Build TypeScript
+```
+
+### Testing
+
+```bash
+# Health check
 npm run health -- <api-key>
+
+# Test authentication
+npm run test:auth -- http://localhost:3000/mcp <api-key>
 ```
 
-- Call tools via a local MCP client:
+### Environment Variables
 
 ```bash
-npm run mcp:client -- <api-key>
+GENERECT_API_BASE=https://api.generect.com  # Generect API endpoint
+MCP_PORT=3000                                # Port (10000 for Render)
 ```
 
+---
+
+## Docker
+
+Build:
+```bash
+docker build -t generect-mcp:latest .
+```
+
+Run:
+```bash
+docker run --rm -p 3000:3000 \
+  -e GENERECT_API_BASE=https://api.generect.com \
+  -e MCP_PORT=3000 \
+  generect-mcp:latest \
+  node dist/http.js
+```
+
+---
+
+## Architecture
+
+- **Transport**: Streamable HTTP (MCP SDK)
+- **Endpoints**:
+  - `POST /mcp` - Client messages (JSON-RPC 2.0)
+  - `GET /mcp` - Server streaming (SSE)
+  - `GET /health` - Health check
+- **Authentication**: Per-request via `Authorization: Bearer Token <key>` header
+- **Multi-tenant**: Each client uses their own Generect API key
+
+---
+
+## License
+
+MIT
