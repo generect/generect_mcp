@@ -4,7 +4,16 @@
       "Bash(dir:*)",
       "Bash(del srcserver.ts srccli.ts scriptsmcp-client.ts scriptsprobe.ts nul)",
       "Bash(git checkout:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(curl https://generect-mcp.onrender.com/health)",
+      "Bash(curl -X POST https://generect-mcp.onrender.com/mcp )",
+      "WebFetch(domain:platform.openai.com)",
+      "WebFetch(domain:openai.github.io)",
+      "Bash(node:*)",
+      "Bash(curl:*)",
+      "Bash(npm run build:*)"
     ],
     "deny": [],
     "ask": []
