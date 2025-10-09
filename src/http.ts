@@ -16,13 +16,21 @@ app.use(cors({ origin: '*', exposedHeaders: ['Mcp-Session-Id'] }));
 // Extract and validate Generect API key from Authorization header
 const extractApiKey = (req: Request): string | null => {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return null;
+  if (!authHeader) return null;
+
+  // Support both formats: "Bearer Token XXX" and "Token XXX"
+  if (authHeader.startsWith('Bearer Token ')) {
+    return authHeader.substring(7); // "Token XXX"
+  }
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7);
+    return token.startsWith('Token ') ? token : `Token ${token}`;
+  }
+  if (authHeader.startsWith('Token ')) {
+    return authHeader;
   }
 
-  const token = authHeader.substring(7);
-  // Ensure it has Token prefix for Generect API
-  return token.startsWith('Token ') ? token : `Token ${token}`;
+  return null;
 };
 
 const transports = new Map<string, any>();
@@ -39,23 +47,26 @@ app.post('/mcp', async (req: Request, res: Response) => {
   console.log('[MCP POST] Active sessions:', Array.from(transports.keys()));
 
   let transport = sessionId ? transports.get(sessionId) : undefined;
+  let apiKey = sessionId ? sessionApiKeys.get(sessionId) : null;
 
   if (!transport && isInitializeRequest(req.body)) {
     const clientApiKey = extractApiKey(req);
+    apiKey = clientApiKey || process.env.GENERECT_API_KEY || 'Token 2c1a9b7c045db3ec42e8d8126b26a7eef171b157';
 
-    // Use demo API key if none provided (for testing)
-    const apiKey = clientApiKey || process.env.GENERECT_API_KEY || 'Token 2c1a9b7c045db3ec42e8d8126b26a7eef171b157';
-    console.log('[MCP POST] Using API key:', apiKey.substring(0, 15) + '...');
+    console.log('[MCP POST] Initialize with API key:', apiKey?.substring(0, 15) + '...');
 
     const newSessionId = randomUUID();
     transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => newSessionId });
     const server = new McpServer({ name: 'generect-api', version: '1.0.0' });
-    registerTools(server, fetch, apiBase, apiKey);
+
+    // Pass callback that dynamically retrieves API key for this session
+    registerTools(server, fetch, apiBase, () => sessionApiKeys.get(newSessionId) || apiKey!);
     await server.connect(transport);
 
-    // Store transport using the newSessionId we generated, not transport.sessionId (which may be undefined)
     transports.set(newSessionId, transport);
     sessionApiKeys.set(newSessionId, apiKey);
+
+    console.log('[MCP POST] Created session:', newSessionId);
   }
 
   if (!transport) {
@@ -64,6 +75,15 @@ app.post('/mcp', async (req: Request, res: Response) => {
       error: { code: -32000, message: 'Bad Request: No session' },
       id: null
     });
+  }
+
+  // ВАЖЛИВО: Для non-initialize запитів оновлюємо API ключ з поточного request
+  if (!isInitializeRequest(req.body)) {
+    const currentApiKey = extractApiKey(req);
+    if (currentApiKey && sessionId) {
+      sessionApiKeys.set(sessionId, currentApiKey);
+      console.log('[MCP POST] Updated API key for session:', sessionId);
+    }
   }
 
   await transport.handleRequest(req as any, res as any, req.body);

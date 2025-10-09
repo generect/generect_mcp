@@ -48,13 +48,13 @@ async function fetchWithTimeout(
   }
 }
 
-export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, apiKey: string) {
+export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, getApiKey: () => string) {
   function resolveAuthHeader(extra: any): string {
     const header = extra?.requestInfo?.headers?.authorization as string | undefined;
     if (header && header.trim()) {
       return header.startsWith('Token ') ? header : `Token ${header}`;
     }
-    const fallback = apiKey || '';
+    const fallback = getApiKey() || '';
     if (!fallback) {
       throw new Error('Authorization header is required');
     }
