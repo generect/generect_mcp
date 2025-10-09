@@ -42,23 +42,20 @@ app.post('/mcp', async (req: Request, res: Response) => {
 
   if (!transport && isInitializeRequest(req.body)) {
     const clientApiKey = extractApiKey(req);
-    if (!clientApiKey) {
-      return res.status(401).json({
-        jsonrpc: '2.0',
-        error: { code: -32001, message: 'Unauthorized: Missing Authorization header with Generect API key' },
-        id: null
-      });
-    }
+
+    // Use demo API key if none provided (for testing)
+    const apiKey = clientApiKey || process.env.GENERECT_API_KEY || 'Token 2c1a9b7c045db3ec42e8d8126b26a7eef171b157';
+    console.log('[MCP POST] Using API key:', apiKey.substring(0, 15) + '...');
 
     const newSessionId = randomUUID();
     transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => newSessionId });
     const server = new McpServer({ name: 'generect-api', version: '1.0.0' });
-    registerTools(server, fetch, apiBase, clientApiKey);
+    registerTools(server, fetch, apiBase, apiKey);
     await server.connect(transport);
 
     // Store transport using the newSessionId we generated, not transport.sessionId (which may be undefined)
     transports.set(newSessionId, transport);
-    sessionApiKeys.set(newSessionId, clientApiKey);
+    sessionApiKeys.set(newSessionId, apiKey);
   }
 
   if (!transport) {
