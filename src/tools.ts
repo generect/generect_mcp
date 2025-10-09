@@ -54,7 +54,15 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     const header = extra?.requestInfo?.headers?.authorization as string | undefined;
     console.log('[resolveAuthHeader] header from extra:', header);
     if (header && header.trim()) {
-      return header.startsWith('Token ') ? header : `Token ${header}`;
+      // Remove "Bearer " prefix if present, keep only "Token XXX"
+      let cleaned = header.trim();
+      if (cleaned.startsWith('Bearer ')) {
+        cleaned = cleaned.substring(7).trim();
+      }
+      // Ensure it starts with "Token "
+      const result = cleaned.startsWith('Token ') ? cleaned : `Token ${cleaned}`;
+      console.log('[resolveAuthHeader] Using header:', result.substring(0, 20) + '...');
+      return result;
     }
     const fallback = getApiKey() || '';
     console.log('[resolveAuthHeader] fallback from session:', fallback?.substring(0, 15) + '...');
