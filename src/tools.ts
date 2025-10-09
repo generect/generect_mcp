@@ -50,11 +50,14 @@ async function fetchWithTimeout(
 
 export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, getApiKey: () => string) {
   function resolveAuthHeader(extra: any): string {
+    console.log('[resolveAuthHeader] extra:', JSON.stringify(extra, null, 2));
     const header = extra?.requestInfo?.headers?.authorization as string | undefined;
+    console.log('[resolveAuthHeader] header from extra:', header);
     if (header && header.trim()) {
       return header.startsWith('Token ') ? header : `Token ${header}`;
     }
     const fallback = getApiKey() || '';
+    console.log('[resolveAuthHeader] fallback from session:', fallback?.substring(0, 15) + '...');
     if (!fallback) {
       throw new Error('Authorization header is required');
     }
@@ -192,6 +195,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       if (debug) console.error('[mcp] generate_email args:', JSON.stringify(args));
       try {
         const Authorization = resolveAuthHeader(extra);
+        console.log('[generate_email] Using Authorization:', Authorization?.substring(0, 20) + '...');
         const candidate = {
           first_name: args.first_name,
           last_name: args.last_name,
@@ -202,9 +206,12 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           headers: { Authorization, 'Content-Type': 'application/json' },
           body: JSON.stringify([candidate]),
         }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        console.log('[generate_email] Response status:', res.status);
         const text = await res.text();
+        console.log('[generate_email] Response body:', text);
         return jsonTextContent(JSON.parse(text));
       } catch (err: unknown) {
+        console.error('[generate_email] Error:', err);
         return jsonTextContent({ error: String(err) });
       }
     }
