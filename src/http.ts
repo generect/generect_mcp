@@ -32,6 +32,12 @@ const sessionApiKeys = new Map<string, string>();
 app.post('/mcp', async (req: Request, res: Response) => {
   const sessionId = (req.headers['mcp-session-id'] as string | undefined) ?? undefined;
 
+  // Debug logging
+  console.log('[MCP POST] Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('[MCP POST] Body:', JSON.stringify(req.body, null, 2));
+  console.log('[MCP POST] Session ID:', sessionId);
+  console.log('[MCP POST] Active sessions:', Array.from(transports.keys()));
+
   let transport = sessionId ? transports.get(sessionId) : undefined;
 
   if (!transport && isInitializeRequest(req.body)) {
