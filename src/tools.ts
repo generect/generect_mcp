@@ -48,6 +48,43 @@ async function fetchWithTimeout(
   }
 }
 
+function getErrorMessageForStatus(status: number): string {
+  const errorMap: Record<number, string> = {
+    429: 'Rate limit exceeded. Please try again later.',
+    402: 'Insufficient credits on your Generect account.',
+    401: 'Invalid API key or authentication failed.',
+    403: 'Access forbidden. Check your API key permissions.',
+    500: 'Internal server error. Please try again later.',
+    503: 'Service temporarily unavailable. Please try again later.',
+  };
+  return errorMap[status] || `API request failed with status ${status}`;
+}
+
+function parseApiResponse(text: string, status: number, toolName: string) {
+  console.log(`[${toolName}] Response body length:`, text.length);
+
+  // Handle empty response
+  if (!text || text.trim() === '') {
+    return {
+      error: getErrorMessageForStatus(status),
+      status,
+      message: 'Empty response from server'
+    };
+  }
+
+  // Try to parse JSON
+  try {
+    return JSON.parse(text);
+  } catch (parseErr) {
+    console.error(`[${toolName}] JSON parse error:`, parseErr);
+    return {
+      error: 'Failed to parse API response',
+      status,
+      response_preview: text.substring(0, 500)
+    };
+  }
+}
+
 export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, getApiKey: () => string) {
   function resolveAuthHeader(extra: any): string {
     console.log('[resolveAuthHeader] extra:', JSON.stringify(extra, null, 2));
@@ -216,8 +253,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         }, Number(args?.timeout_ms ?? defaultTimeoutMs));
         console.log('[generate_email] Response status:', res.status);
         const text = await res.text();
-        console.log('[generate_email] Response body:', text);
-        return jsonTextContent(JSON.parse(text));
+        const data = parseApiResponse(text, res.status, 'generate_email');
+        return jsonTextContent(data);
       } catch (err: unknown) {
         console.error('[generate_email] Error:', err);
         return jsonTextContent({ error: String(err) });
@@ -256,18 +293,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         }, Number(args?.timeout_ms ?? defaultTimeoutMs));
         console.log('[get_lead_by_url] Response status:', res.status);
         const text = await res.text();
-        console.log('[get_lead_by_url] Response body:', text.substring(0, 200));
-        try {
-          const data = JSON.parse(text);
-          return jsonTextContent(data);
-        } catch (parseErr) {
-          console.error('[get_lead_by_url] JSON parse error:', parseErr);
-          return jsonTextContent({
-            error: 'Failed to parse API response',
-            status: res.status,
-            response_preview: text.substring(0, 500)
-          });
-        }
+        const data = parseApiResponse(text, res.status, 'get_lead_by_url');
+        return jsonTextContent(data);
       } catch (err: unknown) {
         console.error('[get_lead_by_url] Error:', err);
         return jsonTextContent({ error: String(err) });
