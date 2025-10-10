@@ -51,7 +51,15 @@ app.post('/mcp', async (req: Request, res: Response) => {
 
   if (!transport && isInitializeRequest(req.body)) {
     const clientApiKey = extractApiKey(req);
-    apiKey = clientApiKey || process.env.GENERECT_API_KEY || 'Token 2c1a9b7c045db3ec42e8d8126b26a7eef171b157';
+    apiKey = clientApiKey || process.env.GENERECT_API_KEY || null;
+
+    if (!apiKey) {
+      return res.status(401).json({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Unauthorized: API key required' },
+        id: null
+      });
+    }
 
     console.log('[MCP POST] Initialize with API key:', apiKey?.substring(0, 15) + '...');
 
