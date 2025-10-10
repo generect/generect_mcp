@@ -18,12 +18,17 @@ const extractApiKey = (req: Request): string | null => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return null;
 
-  // Support both formats: "Bearer Token XXX" and "Token XXX"
+  // Support multiple formats:
+  // 1. "Bearer Token XXX" (from local MCP clients with explicit "Token " prefix)
+  // 2. "Bearer XXX" where XXX is the raw Generect API key (from Claude.ai Custom Connectors)
+  // 3. "Token XXX" (direct format)
+
   if (authHeader.startsWith('Bearer Token ')) {
     return authHeader.substring(7); // "Token XXX"
   }
   if (authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring(7);
+    // If token already has "Token " prefix, use as-is, otherwise add it
     return token.startsWith('Token ') ? token : `Token ${token}`;
   }
   if (authHeader.startsWith('Token ')) {
@@ -118,6 +123,8 @@ const port = Number(process.env.MCP_PORT || 3000);
 app.listen(port, () => {
   console.log(`MCP HTTP server listening on port ${port}`);
   console.log(`Transport: Streamable HTTP (MCP)`);
-  console.log(`Authentication: Client provides Generect API key via Authorization: Bearer <key>`);
+  console.log(`Authentication: Supports multiple formats:`);
+  console.log(`  - Local MCP clients: Authorization: Bearer Token <GENERECT_API_KEY>`);
+  console.log(`  - Claude.ai Custom Connectors: authorization_token parameter with Generect API key`);
   console.log(`API Base: ${apiBase}`);
 });

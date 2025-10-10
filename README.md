@@ -20,6 +20,21 @@ Get your Generect API key from [Generect Dashboard](https://app.generect.com)
 
 ## Configuration
 
+### Claude.ai Custom Connectors (Recommended)
+
+**Available for Pro, Max, Team, and Enterprise plans**
+
+1. Get your Generect API key from [Generect Dashboard](https://app.generect.com)
+2. In Claude.ai, navigate to:
+   - **Team/Enterprise**: Admin settings → Connectors
+   - **Pro/Max**: Settings → Connectors
+3. Click "Add custom connector"
+4. Enter the server URL: `https://generect-mcp.onrender.com/mcp`
+5. In the "Authorization Token" field, paste your Generect API key (e.g., `Token grt_live_xxx...`)
+6. Click "Add"
+
+Each user can provide their own Generect API key when connecting, ensuring secure and personalized access to lead generation tools.
+
 ### Claude Desktop
 
 Add to `claude_desktop_config.json`:
@@ -130,6 +145,18 @@ Replace `<YOUR_GENERECT_API_KEY>` with your Generect API key. After saving, rest
 - **health**: Health check for the Generect API
 
 All tools support optional `timeout_ms` parameter for custom request timeouts.
+
+---
+
+## Authentication
+
+This server supports multiple authentication formats for flexibility across different clients:
+
+- **Claude.ai Custom Connectors**: Pass your Generect API key directly in the `authorization_token` field
+- **Local MCP clients** (Claude Desktop, Cursor, Windsurf): Use `Authorization: Bearer Token <YOUR_KEY>` in headers
+- **Direct API calls**: Use `Authorization: Bearer <YOUR_KEY>` or `Authorization: Token <YOUR_KEY>`
+
+All formats are automatically normalized to work with the Generect API.
 
 ---
 
