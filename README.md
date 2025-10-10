@@ -1,18 +1,24 @@
-## Generect Live API - Remote MCP Server
+# Generect MCP Server
 
-Remote MCP server exposing Generect Live API tools. Users connect with their own API keys.
+## Overview
 
-### Available Tools
+The Generect MCP Server is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io/introduction) server that allows you to interact with the Generect Live API via LLMs. Access powerful lead generation, company search, and email finding capabilities directly through your AI assistant.
 
-- `search_leads` - Search for leads by ICP filters
-- `search_companies` - Search for companies by ICP filters
-- `generate_email` - Generate email by first/last name and domain
-- `get_lead_by_url` - Get LinkedIn lead by profile URL
-- `health` - Health check against the API
+## Getting Started
 
----
+**Server URL:** `https://generect-mcp.onrender.com/mcp`
 
-## How to Use
+Get your Generect API key from [Generect Dashboard](https://app.generect.com)
+
+## Use Cases
+
+- Finding and enriching B2B leads by job title, company, location, and industry
+- Searching for companies based on ICP filters (headcount, industry, keywords)
+- Generating professional email addresses for prospects
+- Retrieving detailed LinkedIn profile data
+- Building prospecting lists for sales and marketing campaigns
+
+## Configuration
 
 ### Claude Desktop
 
@@ -81,8 +87,29 @@ Replace `<YOUR_GENERECT_API_KEY>` with your Generect API key. After saving, rest
 
 ---
 
-## Server URL
+## Tools
 
-**Production:** `https://generect-mcp.onrender.com/mcp`
+### Leads
 
-Get your Generect API key from [Generect Dashboard](https://app.generect.com)
+- **search_leads**: Search for B2B leads by ICP filters (job title, location, industry, company)
+- **get_lead_by_url**: Get detailed LinkedIn profile data by profile URL
+
+### Companies
+
+- **search_companies**: Search for companies by ICP filters (headcount, industry, keywords)
+
+### Email
+
+- **generate_email**: Generate professional email addresses by first name, last name, and domain
+
+### Utilities
+
+- **health**: Health check for the Generect API
+
+All tools support optional `timeout_ms` parameter for custom request timeouts.
+
+---
+
+## Feedback
+
+Please leave feedback via [filing a GitHub issue](https://github.com/generect/generect_mcp/issues) if you have any feature requests, bug reports, suggestions, comments, or concerns.
