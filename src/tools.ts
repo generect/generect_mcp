@@ -241,6 +241,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       if (debug) console.error('[mcp] get_lead_by_url args:', JSON.stringify(args));
       try {
         const Authorization = resolveAuthHeader(extra);
+        console.log('[get_lead_by_url] Using Authorization:', Authorization?.substring(0, 20) + '...');
         const payload = {
           url: args.url,
           comments: Boolean(args.comments),
@@ -253,9 +254,22 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           headers: { Authorization, 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        console.log('[get_lead_by_url] Response status:', res.status);
         const text = await res.text();
-        return jsonTextContent(JSON.parse(text));
+        console.log('[get_lead_by_url] Response body:', text.substring(0, 200));
+        try {
+          const data = JSON.parse(text);
+          return jsonTextContent(data);
+        } catch (parseErr) {
+          console.error('[get_lead_by_url] JSON parse error:', parseErr);
+          return jsonTextContent({
+            error: 'Failed to parse API response',
+            status: res.status,
+            response_preview: text.substring(0, 500)
+          });
+        }
       } catch (err: unknown) {
+        console.error('[get_lead_by_url] Error:', err);
         return jsonTextContent({ error: String(err) });
       }
     }
