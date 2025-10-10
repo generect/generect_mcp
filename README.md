@@ -24,6 +24,8 @@ Get your Generect API key from [Generect Dashboard](https://app.generect.com)
 
 Add to `claude_desktop_config.json`:
 
+**Option 1: Direct HTTP (Recommended)**
+
 ```json
 {
   "mcpServers": {
@@ -31,6 +33,27 @@ Add to `claude_desktop_config.json`:
       "url": "https://generect-mcp.onrender.com/mcp",
       "headers": {
         "Authorization": "Bearer Token <YOUR_GENERECT_API_KEY>"
+      }
+    }
+  }
+}
+```
+
+**Option 2: Using mcp-remote proxy**
+
+```json
+{
+  "mcpServers": {
+    "generect": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://generect-mcp.onrender.com/mcp",
+        "--header",
+        "Authorization: Bearer Token ${GENERECT_API_KEY}"
+      ],
+      "env": {
+        "GENERECT_API_KEY": "<YOUR_GENERECT_API_KEY>"
       }
     }
   }
