@@ -27,7 +27,7 @@ Add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "generect-api": {
+    "generect": {
       "url": "https://generect-mcp.onrender.com/mcp",
       "headers": {
         "Authorization": "Bearer Token <YOUR_GENERECT_API_KEY>"
@@ -50,7 +50,7 @@ Add to MCP configuration file:
 ```json
 {
   "mcpServers": {
-    "generect-api": {
+    "generect": {
       "url": "https://generect-mcp.onrender.com/mcp",
       "headers": {
         "Authorization": "Bearer Token <YOUR_GENERECT_API_KEY>"
@@ -73,7 +73,7 @@ Add to MCP configuration file:
 ```json
 {
   "mcpServers": {
-    "generect-api": {
+    "generect": {
       "url": "https://generect-mcp.onrender.com/mcp",
       "headers": {
         "Authorization": "Bearer Token <YOUR_GENERECT_API_KEY>"
