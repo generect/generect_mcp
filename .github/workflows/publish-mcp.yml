@@ -1,0 +1,39 @@
+name: Publish to MCP Registry
+
+on:
+  workflow_dispatch:  # Manual trigger
+  push:
+    branches:
+      - main
+    paths:
+      - 'server.json'
+
+permissions:
+  id-token: write  # Required for OIDC
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download MCP Publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/download/v1.0.0/mcp-publisher_1.0.0_linux_amd64.tar.gz" | tar xz
+          chmod +x mcp-publisher
+
+      - name: Authenticate with GitHub OIDC
+        run: |
+          ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: |
+          ./mcp-publisher publish
+
+      - name: Show result
+        if: success()
+        run: |
+          echo "✅ Successfully published to MCP Registry!"
+          echo "Server: io.github.generect/generect-mcp"

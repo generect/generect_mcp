@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "io.github.generect/generect-mcp",
-  "description": "B2B lead generation, company search, and email finding through Generect Live API. Find prospects by job title, location, industry, and company filters.",
+  "description": "B2B lead generation and company search through Generect Live API for sales prospecting.",
   "version": "0.1.0",
   "remotes": [
     {
@@ -10,9 +10,7 @@
       "headers": [
         {
           "name": "Authorization",
-          "description": "Bearer Token YOUR_GENERECT_API_KEY from https://app.generect.com",
-          "is_required": true,
-          "is_secret": true
+          "description": "Bearer Token YOUR_GENERECT_API_KEY from https://app.generect.com"
         }
       ]
     }
