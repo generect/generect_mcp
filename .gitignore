@@ -16,3 +16,7 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
+# MCP Registry credentials and keys
+key.pem
+.mcpregistry_*
+mcp-publisher.exe

@@ -129,20 +129,50 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args: any, extra: any) => {
-      if (debug) console.error('[mcp] search_leads args:', JSON.stringify(args));
+      const toolName = 'search_leads';
+      console.log(`[${toolName}] Called with args:`, JSON.stringify(args));
       try {
         const Authorization = resolveAuthHeader(extra);
+        console.log(`[${toolName}] Authorization resolved`);
+
+        // Convert company_id to string if provided
+        const payload = { ...args };
+        if (payload.company_id !== undefined && payload.company_id !== null) {
+          payload.company_id = String(payload.company_id);
+          console.log(`[${toolName}] Converted company_id to string:`, payload.company_id);
+        }
+
+        console.log(`[${toolName}] Sending request to API with payload:`, JSON.stringify(payload));
         const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_icp/`, {
           method: 'POST',
           headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify(args || {}),
+          body: JSON.stringify(payload),
         }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+
+        console.log(`[${toolName}] Response status:`, res.status);
         const text = await res.text();
-        const data = JSON.parse(text);
+        console.log(`[${toolName}] Response body length:`, text.length);
+
+        if (!res.ok) {
+          console.error(`[${toolName}] API error ${res.status}:`, text.substring(0, 500));
+          return jsonTextContent({
+            error: getErrorMessageForStatus(res.status),
+            status: res.status,
+            details: text.substring(0, 500)
+          });
+        }
+
+        const data = parseApiResponse(text, res.status, toolName);
+        if (data.error) {
+          console.error(`[${toolName}] Parse error:`, data.error);
+          return jsonTextContent(data);
+        }
+
         const compact = args?.compact !== false; // default true
         const maxItems = Number(args?.max_items ?? args?.limit ?? 10);
         if (compact && data) {
           const leads = (data.leads ?? data.results ?? data.items ?? []) as any[];
+          console.log(`[${toolName}] Found ${leads.length} leads, returning ${Math.min(leads.length, maxItems)}`);
           const trimmed = leads.slice(0, Math.max(0, Math.min(maxItems, 50))).map(sanitizeLead);
           return {
             structuredContent: { amount: data.amount ?? leads.length ?? null, leads: trimmed },
@@ -151,7 +181,12 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         }
         return jsonTextContent(data);
       } catch (err: unknown) {
-        return jsonTextContent({ error: String(err) });
+        console.error(`[${toolName}] Exception:`, err);
+        return jsonTextContent({
+          error: err instanceof Error ? err.message : String(err),
+          tool: toolName,
+          stack: err instanceof Error ? err.stack : undefined
+        });
       }
     }
   );
@@ -172,20 +207,42 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args: any, extra: any) => {
-      if (debug) console.error('[mcp] search_companies args:', JSON.stringify(args));
+      const toolName = 'search_companies';
+      console.log(`[${toolName}] Called with args:`, JSON.stringify(args));
       try {
         const Authorization = resolveAuthHeader(extra);
+        console.log(`[${toolName}] Authorization resolved`);
+
+        console.log(`[${toolName}] Sending request to API with payload:`, JSON.stringify(args));
         const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/companies/by_icp/`, {
           method: 'POST',
           headers: { Authorization, 'Content-Type': 'application/json' },
           body: JSON.stringify(args || {}),
         }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+
+        console.log(`[${toolName}] Response status:`, res.status);
         const text = await res.text();
-        let data = JSON.parse(text);
+        console.log(`[${toolName}] Response body length:`, text.length);
+
+        if (!res.ok) {
+          console.error(`[${toolName}] API error ${res.status}:`, text.substring(0, 500));
+          return jsonTextContent({
+            error: getErrorMessageForStatus(res.status),
+            status: res.status,
+            details: text.substring(0, 500)
+          });
+        }
+
+        let data = parseApiResponse(text, res.status, toolName);
+        if (data.error) {
+          console.error(`[${toolName}] Parse error:`, data.error);
+          return jsonTextContent(data);
+        }
         // Fallback: derive companies from leads by keywords when API returns nothing
         const companiesEmpty = !data || !Array.isArray(data.companies) || data.companies.length === 0;
         const shouldFallback = companiesEmpty && Array.isArray(args?.keywords) && args.keywords.length > 0 && args?.fallback_from_leads !== false;
         if (shouldFallback) {
+          console.log(`[${toolName}] No companies found, trying fallback from leads with keywords:`, args.keywords);
           const leadsBody: Record<string, unknown> = { keywords: args.keywords, limit: 100 };
           const resLeads = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_icp/`, {
             method: 'POST',
@@ -193,9 +250,11 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
             body: JSON.stringify(leadsBody),
           }, Number(args?.timeout_ms ?? defaultTimeoutMs));
           const leadsText = await resLeads.text();
+          console.log(`[${toolName}] Fallback leads response status:`, resLeads.status);
           try {
             const leadsData = JSON.parse(leadsText);
             const leads = (leadsData.leads ?? leadsData.results ?? []) as any[];
+            console.log(`[${toolName}] Fallback found ${leads.length} leads`);
             const counts = new Map<string, number>();
             for (const lead of leads) {
               const name = lead.company_name ?? lead.raw_company_name;
@@ -204,15 +263,17 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
               }
             }
             const derived = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, occurrences_in_leads: count }));
+            console.log(`[${toolName}] Derived ${derived.length} companies from leads`);
             data = { amount: derived.length, companies: derived };
-          } catch {
-            // ignore fallback parse errors
+          } catch (fallbackErr) {
+            console.error(`[${toolName}] Fallback parse error:`, fallbackErr);
           }
         }
         const compact = args?.compact !== false; // default true
         const maxItems = Number(args?.max_items ?? 10);
         if (compact && data) {
           const companies = (data.companies ?? data.results ?? data.items ?? []) as any[];
+          console.log(`[${toolName}] Found ${companies.length} companies, returning ${Math.min(companies.length, maxItems)}`);
           const trimmed = companies.slice(0, Math.max(0, Math.min(maxItems, 50))).map((c: any) => (c.name || c.occurrences_in_leads ? c : sanitizeCompany(c)));
           return {
             structuredContent: { amount: data.amount ?? companies.length ?? null, companies: trimmed },
@@ -221,7 +282,12 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         }
         return jsonTextContent(data);
       } catch (err: unknown) {
-        return jsonTextContent({ error: String(err) });
+        console.error(`[${toolName}] Exception:`, err);
+        return jsonTextContent({
+          error: err instanceof Error ? err.message : String(err),
+          tool: toolName,
+          stack: err instanceof Error ? err.stack : undefined
+        });
       }
     }
   );
