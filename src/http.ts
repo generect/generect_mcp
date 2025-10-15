@@ -13,29 +13,9 @@ const app = express();
 app.use(express.json());
 app.use(cors({ origin: '*', exposedHeaders: ['Mcp-Session-Id'] }));
 
-// Extract and validate Generect API key from Authorization header
+// Extract Authorization header as-is (user must provide correct format with "Token " prefix)
 const extractApiKey = (req: Request): string | null => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return null;
-
-  // Support multiple formats:
-  // 1. "Bearer Token XXX" (from local MCP clients with explicit "Token " prefix)
-  // 2. "Bearer XXX" where XXX is the raw Generect API key (from Claude.ai Custom Connectors)
-  // 3. "Token XXX" (direct format)
-
-  if (authHeader.startsWith('Bearer Token ')) {
-    return authHeader.substring(7); // "Token XXX"
-  }
-  if (authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7);
-    // If token already has "Token " prefix, use as-is, otherwise add it
-    return token.startsWith('Token ') ? token : `Token ${token}`;
-  }
-  if (authHeader.startsWith('Token ')) {
-    return authHeader;
-  }
-
-  return null;
+  return req.headers.authorization || null;
 };
 
 const transports = new Map<string, any>();
