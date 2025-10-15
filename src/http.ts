@@ -13,9 +13,23 @@ const app = express();
 app.use(express.json());
 app.use(cors({ origin: '*', exposedHeaders: ['Mcp-Session-Id'] }));
 
-// Extract Authorization header as-is (user must provide correct format with "Token " prefix)
+// Extract and normalize Authorization header for Generect API
 const extractApiKey = (req: Request): string | null => {
-  return req.headers.authorization || null;
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return null;
+
+  // If "Bearer <token>", add "Token " prefix for Generect API
+  if (authHeader.startsWith('Bearer ') && !authHeader.startsWith('Bearer Token ')) {
+    return `Token ${authHeader.substring(7)}`;
+  }
+
+  // If "Bearer Token <token>", extract "Token <token>"
+  if (authHeader.startsWith('Bearer Token ')) {
+    return authHeader.substring(7);
+  }
+
+  // Return as-is for other formats (like "Token <token>")
+  return authHeader;
 };
 
 const transports = new Map<string, any>();
