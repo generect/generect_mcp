@@ -4,8 +4,8 @@
   "description": "B2B lead generation and company search through Generect Live API for sales prospecting.",
   "version": "0.1.2",
   "repository": {
-    "type": "git",
-    "url": "https://github.com/generect/generect_mcp"
+    "url": "https://github.com/generect/generect_mcp.git",
+    "source": "github"
   },
   "remotes": [
     {
