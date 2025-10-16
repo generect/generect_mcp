@@ -1,8 +1,33 @@
 ## Generect Live API MCP Server
 
-Minimal MCP server exposing Generect Live API tools.
+Minimal MCP server exposing Generect Live API tools for B2B lead generation and company search.
 
-### Quickstart
+### Get Your API Key
+
+Sign up and get your API key at [https://beta.generect.com](https://beta.generect.com)
+
+### Remote MCP Server (Recommended)
+
+Use our hosted MCP server via [MCP Registry](https://registry.modelcontextprotocol.io):
+
+```json
+{
+  "mcpServers": {
+    "generect": {
+      "command": "mcp-remote",
+      "args": [
+        "https://mcp.generect.com/mcp",
+        "--header",
+        "Authorization: Bearer Token YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
+Replace `YOUR_API_KEY` with your key from [beta.generect.com](https://beta.generect.com).
+
+### Local Installation (Alternative)
 
 1) Requirements: Node >= 18
 
@@ -13,8 +38,6 @@ GENERECT_API_BASE=https://api.generect.com
 GENERECT_API_KEY=Token <api-key>
 GENERECT_TIMEOUT_MS=60000
 ```
-
-Note: If you provide a raw key without the `Token ` prefix, the server will add it automatically.
 
 3) Local dev (optional)
 
@@ -47,7 +70,7 @@ npm run build && npm start
       "args": ["./node_modules/tsx/dist/cli.mjs", "src/server.ts"],
       "env": {
         "GENERECT_API_BASE": "https://api.generect.com",
-        "GENERECT_API_KEY": "Token <api-key>",
+        "GENERECT_API_KEY": "Token YOUR_API_KEY",
         "GENERECT_TIMEOUT_MS": "60000"
       }
     }
@@ -67,7 +90,7 @@ Add to `~/.claude/claude_desktop_config.json` (or via UI → MCP Servers). Recom
       "args": ["-y", "generect-ultimate-mcp@latest"],
       "env": {
         "GENERECT_API_BASE": "https://api.generect.com",
-        "GENERECT_API_KEY": "Token <api-key>",
+        "GENERECT_API_KEY": "Token YOUR_API_KEY",
         "GENERECT_TIMEOUT_MS": "60000",
         "MCP_DEBUG": "0"
       }
@@ -110,7 +133,7 @@ Run the server in a container:
 ```bash
 docker run --rm \
   -e GENERECT_API_BASE=https://api.generect.com \
-  -e GENERECT_API_KEY="Token <api-key>" \
+  -e GENERECT_API_KEY="Token YOUR_API_KEY" \
   ghcr.io/generect/generect_mcp:local
 ```
 
@@ -131,7 +154,7 @@ Some MCP clients allow spawning the server via SSH, using stdio over the SSH ses
       ],
       "env": {
         "GENERECT_API_BASE": "https://api.generect.com",
-        "GENERECT_API_KEY": "Token <api-key>",
+        "GENERECT_API_KEY": "Token YOUR_API_KEY",
         "GENERECT_TIMEOUT_MS": "60000"
       }
     }
