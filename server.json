@@ -10,7 +10,7 @@
       "headers": [
         {
           "name": "Authorization",
-          "description": "Bearer Token YOUR_GENERECT_API_KEY from https://app.generect.com"
+          "description": "Bearer Token YOUR_GENERECT_API_KEY from https://beta.generect.com"
         }
       ]
     }
