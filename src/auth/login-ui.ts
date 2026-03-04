@@ -430,7 +430,7 @@ export function renderRedirectPage(params: {
   </div>
   <script>
     // Attempt immediate redirect
-    const redirectUrl = '${escapeHtml(redirectUrlString)}';
+    const redirectUrl = '${escapeJs(redirectUrlString)}';
 
     // Small delay to ensure page is fully loaded
     setTimeout(function() {
@@ -446,6 +446,12 @@ export function renderRedirectPage(params: {
   </script>
 </body>
 </html>`;
+}
+
+function escapeJs(str: string): string {
+  return str
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'");
 }
 
 function escapeHtml(str: string): string {
