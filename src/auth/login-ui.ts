@@ -262,10 +262,8 @@ export function renderLoginPage(params: {
     document.getElementById('authForm').addEventListener('submit', function(e) {
       const btn = document.getElementById('submitBtn');
       const btnText = document.getElementById('btnText');
-      const input = document.getElementById('api_token');
 
       btn.disabled = true;
-      input.disabled = true;
       btnText.innerHTML = '<span class="spinner"></span> Authorizing...';
     });
   </script>
