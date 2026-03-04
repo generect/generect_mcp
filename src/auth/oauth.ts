@@ -190,11 +190,17 @@ async function handleAuthorizePost(req: Request, res: Response) {
   const apiToken = req.body.api_token as string;
   
   if (!apiToken || !apiToken.trim()) {
-    const redirectUrl = new URL(redirectUri);
-    redirectUrl.searchParams.set('error', 'invalid_request');
-    redirectUrl.searchParams.set('error_description', 'API token is required');
-    if (state) redirectUrl.searchParams.set('state', state);
-    res.redirect(redirectUrl.toString());
+    const client = await resolveClient(clientId);
+    res.status(400).send(renderLoginPage({
+      clientId,
+      redirectUri,
+      state,
+      codeChallenge,
+      codeChallengeMethod,
+      scope,
+      clientName: client?.clientName,
+      error: 'API token is required',
+    }));
     return;
   }
   
