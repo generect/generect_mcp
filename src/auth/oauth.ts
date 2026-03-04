@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { renderLoginPage, renderErrorPage } from './login-ui.js';
+import { renderLoginPage, renderErrorPage, renderRedirectPage } from './login-ui.js';
 import { 
   getClient, 
   getClientByMetadataUrl,
@@ -226,7 +226,7 @@ async function handleAuthorizePost(req: Request, res: Response) {
   
   const normalizedToken = apiToken.startsWith('Token ') ? apiToken : `Token ${apiToken}`;
   const userId = generateUserId();
-  
+
   const code = createAuthCode({
     clientId,
     redirectUri,
@@ -236,12 +236,15 @@ async function handleAuthorizePost(req: Request, res: Response) {
     userId,
     scope,
   });
-  
-  const redirectUrl = new URL(redirectUri);
-  redirectUrl.searchParams.set('code', code);
-  if (state) redirectUrl.searchParams.set('state', state);
-  
-  res.redirect(redirectUrl.toString());
+
+  // Use client-side JavaScript redirect instead of HTTP 302 redirect
+  // This is more reliable for custom protocol handlers (claude://, mcp://)
+  // and prevents the double "Continue to Claude Desktop?" popup issue
+  res.send(renderRedirectPage({
+    redirectUri,
+    authorizationCode: code,
+    state,
+  }));
 }
 
 async function handleToken(req: Request, res: Response) {
