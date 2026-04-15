@@ -1,4 +1,13 @@
-import { SignJWT, jwtVerify, generateKeyPair, exportJWK, importJWK, calculateJwkThumbprint, KeyObject, JWK } from 'jose';
+import {
+  SignJWT,
+  jwtVerify,
+  generateKeyPair,
+  exportJWK,
+  importJWK,
+  calculateJwkThumbprint,
+  KeyObject,
+  JWK,
+} from 'jose';
 import { encryptApiToken, decryptApiToken } from './crypto.js';
 
 export interface GenerectJwtPayload {
@@ -30,22 +39,25 @@ export function getIssuer(): string {
 
 async function getSigningKey(): Promise<SigningKey> {
   if (signingKey) return signingKey;
-  
+
   const secretKey = process.env.JWT_SIGNING_KEY;
   if (secretKey) {
-    signingKey = await importJWK({ k: Buffer.from(secretKey).toString('base64url'), kty: 'oct', alg: 'HS256' }, 'HS256') as SigningKey;
+    signingKey = (await importJWK(
+      { k: Buffer.from(secretKey).toString('base64url'), kty: 'oct', alg: 'HS256' },
+      'HS256',
+    )) as SigningKey;
     publicKeyJwk = { kty: 'oct', alg: 'HS256' };
     keyId = 'default';
     return signingKey;
   }
-  
+
   const { privateKey, publicKey } = await generateKeyPair('RS256');
   signingKey = privateKey as SigningKey;
   publicKeyJwk = await exportJWK(publicKey);
   keyId = await calculateJwkThumbprint(publicKeyJwk);
   publicKeyJwk.kid = keyId;
   publicKeyJwk.alg = 'RS256';
-  
+
   return signingKey;
 }
 
@@ -58,15 +70,11 @@ export function getKeyId(): string {
   return keyId;
 }
 
-export async function generateAccessToken(
-  apiToken: string,
-  userId: string,
-  clientId?: string
-): Promise<string> {
+export async function generateAccessToken(apiToken: string, userId: string, clientId?: string): Promise<string> {
   const key = await getSigningKey();
   const encryptedToken = encryptApiToken(apiToken);
   const now = Math.floor(Date.now() / 1000);
-  
+
   const jwt = await new SignJWT({
     sub: userId,
     scope: 'generect:api',
@@ -78,7 +86,7 @@ export async function generateAccessToken(
     .setIssuer(getIssuer())
     .setAudience(getMcpEndpointUrl())
     .sign(key);
-  
+
   return jwt;
 }
 
@@ -89,7 +97,7 @@ export async function verifyAccessToken(token: string): Promise<GenerectJwtPaylo
       issuer: getIssuer(),
       audience: getMcpEndpointUrl(),
     });
-    
+
     return payload;
   } catch (error) {
     return null;

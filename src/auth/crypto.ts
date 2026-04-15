@@ -21,13 +21,13 @@ export function encryptApiToken(plainToken: string): string {
   const key = getEncryptionKey();
   const iv = randomBytes(IV_LENGTH);
   const salt = randomBytes(SALT_LENGTH);
-  
+
   const derivedKey = pbkdf2Sync(key, salt, ITERATIONS, 32, 'sha256');
   const cipher = createCipheriv(ALGORITHM, derivedKey, iv, { authTagLength: AUTH_TAG_LENGTH });
-  
+
   const encrypted = Buffer.concat([cipher.update(plainToken, 'utf8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
-  
+
   const combined = Buffer.concat([salt, iv, authTag, encrypted]);
   return combined.toString('base64url');
 }
@@ -35,16 +35,16 @@ export function encryptApiToken(plainToken: string): string {
 export function decryptApiToken(encryptedToken: string): string {
   const key = getEncryptionKey();
   const combined = Buffer.from(encryptedToken, 'base64url');
-  
+
   const salt = combined.subarray(0, SALT_LENGTH);
   const iv = combined.subarray(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
   const authTag = combined.subarray(SALT_LENGTH + IV_LENGTH, SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH);
   const encrypted = combined.subarray(SALT_LENGTH + IV_LENGTH + AUTH_TAG_LENGTH);
-  
+
   const derivedKey = pbkdf2Sync(key, salt, ITERATIONS, 32, 'sha256');
   const decipher = createDecipheriv(ALGORITHM, derivedKey, iv, { authTagLength: AUTH_TAG_LENGTH });
   decipher.setAuthTag(authTag);
-  
+
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 }
 

@@ -6,9 +6,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './tools.js';
-import { 
-  handleProtectedResourceMetadata, 
-  handleAuthorizationServerMetadata, 
+import {
+  handleProtectedResourceMetadata,
+  handleAuthorizationServerMetadata,
   handleJwks,
   oauthRouter,
   requireBearerAuth,
@@ -17,22 +17,26 @@ import {
 
 const apiBase = process.env.GENERECT_API_BASE || 'https://api.generect.com';
 const rawApiKey = process.env.GENERECT_API_KEY || '';
-const apiKey = rawApiKey && rawApiKey.startsWith('Token ') ? rawApiKey : (rawApiKey ? `Token ${rawApiKey}` : '');
+const apiKey = rawApiKey && rawApiKey.startsWith('Token ') ? rawApiKey : rawApiKey ? `Token ${rawApiKey}` : '';
 
 const app = express();
 
 app.use(express.urlencoded({ extended: true }));
 
-app.use(express.json({
-  verify: (req: any, _res, buf) => {
-    req.rawBody = buf?.toString() ?? '';
-  },
-}));
+app.use(
+  express.json({
+    verify: (req: any, _res, buf) => {
+      req.rawBody = buf?.toString() ?? '';
+    },
+  }),
+);
 
-app.use(cors({ 
-  origin: '*', 
-  exposedHeaders: ['Mcp-Session-Id', 'WWW-Authenticate'] 
-}));
+app.use(
+  cors({
+    origin: '*',
+    exposedHeaders: ['Mcp-Session-Id', 'WWW-Authenticate'],
+  }),
+);
 
 app.get('/.well-known/oauth-protected-resource', handleProtectedResourceMetadata);
 app.get('/.well-known/oauth-authorization-server', handleAuthorizationServerMetadata);
@@ -61,7 +65,7 @@ app.post('/mcp', requireBearerAuth, async (req: AuthenticatedRequest, res: Respo
   if (!transport && isInitializeRequest(req.body)) {
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (sessionId) => {
+      onsessioninitialized: sessionId => {
         transports.set(sessionId, transport!);
       },
     });

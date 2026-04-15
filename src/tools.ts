@@ -5,7 +5,9 @@ import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
 type Fetcher = typeof fetch;
 
 function jsonTextContent(value: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }],
+  };
 }
 
 function sanitizeLead(lead: any) {
@@ -33,12 +35,7 @@ function sanitizeCompany(company: any) {
   };
 }
 
-async function fetchWithTimeout(
-  fetcher: Fetcher,
-  url: string,
-  init: RequestInit,
-  timeoutMs = 20000
-) {
+async function fetchWithTimeout(fetcher: Fetcher, url: string, init: RequestInit, timeoutMs = 20000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -52,7 +49,7 @@ async function fetchWithTimeout(
 export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, apiKey: string) {
   async function resolveAuthHeader(extra: any): Promise<string> {
     const header = extra?.requestInfo?.headers?.authorization as string | undefined;
-    
+
     if (!header || !header.trim()) {
       const fallback = apiKey || '';
       if (!fallback) {
@@ -60,7 +57,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       }
       return fallback.startsWith('Token ') ? fallback : `Token ${fallback}`;
     }
-    
+
     const match = header.match(/^Bearer\s+(.+)$/i);
     if (!match) {
       if (header.startsWith('Token ')) {
@@ -68,18 +65,18 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       }
       return `Token ${header}`;
     }
-    
+
     const token = match[1];
-    
+
     if (token.startsWith('Token ')) {
       return token;
     }
-    
+
     const payload = await verifyAccessToken(token);
     if (!payload) {
       throw new Error('Invalid or expired access token');
     }
-    
+
     const apiToken = extractApiToken(payload);
     return apiToken;
   }
@@ -107,11 +104,16 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       if (debug) console.error('[mcp] search_leads args:', JSON.stringify(args));
       try {
         const Authorization = await resolveAuthHeader(extra);
-        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_icp/`, {
-          method: 'POST',
-          headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify(args || {}),
-        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        const res = await fetchWithTimeout(
+          fetcher,
+          `${apiBase}/api/linkedin/leads/by_icp/`,
+          {
+            method: 'POST',
+            headers: { Authorization, 'Content-Type': 'application/json' },
+            body: JSON.stringify(args || {}),
+          },
+          Number(args?.timeout_ms ?? defaultTimeoutMs),
+        );
         const text = await res.text();
         const data = JSON.parse(text);
         const compact = args?.compact !== false;
@@ -120,15 +122,23 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           const leads = (data.leads ?? data.results ?? data.items ?? []) as any[];
           const trimmed = leads.slice(0, Math.max(0, Math.min(maxItems, 50))).map(sanitizeLead);
           return {
-            structuredContent: { amount: data.amount ?? leads.length ?? null, leads: trimmed },
-            content: [{ type: 'text', text: JSON.stringify({ amount: data.amount ?? trimmed.length, leads: trimmed }, null, 2) }],
+            structuredContent: {
+              amount: data.amount ?? leads.length ?? null,
+              leads: trimmed,
+            },
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({ amount: data.amount ?? trimmed.length, leads: trimmed }, null, 2),
+              },
+            ],
           } as any;
         }
         return jsonTextContent(data);
       } catch (err: unknown) {
         return jsonTextContent({ error: String(err) });
       }
-    }
+    },
   );
 
   // 2. Search companies
@@ -148,24 +158,42 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     },
     async (args, extra) => {
       if (debug) console.error('[mcp] search_companies args:', JSON.stringify(args));
+
       try {
         const Authorization = await resolveAuthHeader(extra);
-        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/companies/by_icp/`, {
-          method: 'POST',
-          headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify(args || {}),
-        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        const res = await fetchWithTimeout(
+          fetcher,
+          `${apiBase}/api/linkedin/companies/by_icp/`,
+          {
+            method: 'POST',
+            headers: { Authorization, 'Content-Type': 'application/json' },
+            body: JSON.stringify(args || {}),
+          },
+          Number(args?.timeout_ms ?? defaultTimeoutMs),
+        );
         const text = await res.text();
         let data = JSON.parse(text);
         const companiesEmpty = !data || !Array.isArray(data.companies) || data.companies.length === 0;
-        const shouldFallback = companiesEmpty && Array.isArray(args?.keywords) && args.keywords.length > 0 && args?.fallback_from_leads !== false;
+        const shouldFallback =
+          companiesEmpty &&
+          Array.isArray(args?.keywords) &&
+          args.keywords.length > 0 &&
+          args?.fallback_from_leads !== false;
         if (shouldFallback) {
-          const leadsBody: Record<string, unknown> = { keywords: args.keywords, limit: 100 };
-          const resLeads = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_icp/`, {
-            method: 'POST',
-            headers: { Authorization, 'Content-Type': 'application/json' },
-            body: JSON.stringify(leadsBody),
-          }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+          const leadsBody: Record<string, unknown> = {
+            keywords: args.keywords,
+            limit: 100,
+          };
+          const resLeads = await fetchWithTimeout(
+            fetcher,
+            `${apiBase}/api/linkedin/leads/by_icp/`,
+            {
+              method: 'POST',
+              headers: { Authorization, 'Content-Type': 'application/json' },
+              body: JSON.stringify(leadsBody),
+            },
+            Number(args?.timeout_ms ?? defaultTimeoutMs),
+          );
           const leadsText = await resLeads.text();
           try {
             const leadsData = JSON.parse(leadsText);
@@ -177,26 +205,37 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
                 counts.set(name, (counts.get(name) ?? 0) + 1);
               }
             }
-            const derived = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, occurrences_in_leads: count }));
+            const derived = Array.from(counts.entries())
+              .sort((a, b) => b[1] - a[1])
+              .map(([name, count]) => ({ name, occurrences_in_leads: count }));
             data = { amount: derived.length, companies: derived };
-          } catch {
-          }
+          } catch {}
         }
         const compact = args?.compact !== false;
         const maxItems = Number(args?.max_items ?? 10);
         if (compact && data) {
           const companies = (data.companies ?? data.results ?? data.items ?? []) as any[];
-          const trimmed = companies.slice(0, Math.max(0, Math.min(maxItems, 50))).map((c: any) => (c.name || c.occurrences_in_leads ? c : sanitizeCompany(c)));
+          const trimmed = companies
+            .slice(0, Math.max(0, Math.min(maxItems, 50)))
+            .map((c: any) => (c.name || c.occurrences_in_leads ? c : sanitizeCompany(c)));
           return {
-            structuredContent: { amount: data.amount ?? companies.length ?? null, companies: trimmed },
-            content: [{ type: 'text', text: JSON.stringify({ amount: data.amount ?? trimmed.length, companies: trimmed }, null, 2) }],
+            structuredContent: {
+              amount: data.amount ?? companies.length ?? null,
+              companies: trimmed,
+            },
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({ amount: data.amount ?? trimmed.length, companies: trimmed }, null, 2),
+              },
+            ],
           } as any;
         }
         return jsonTextContent(data);
       } catch (err: unknown) {
         return jsonTextContent({ error: String(err) });
       }
-    }
+    },
   );
 
   // 3. Email finder
@@ -216,19 +255,24 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const candidate = {
           first_name: args.first_name,
           last_name: args.last_name,
-          domain: args.domain
+          domain: args.domain,
         };
-        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/email_finder/`, {
-          method: 'POST',
-          headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify([candidate]),
-        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        const res = await fetchWithTimeout(
+          fetcher,
+          `${apiBase}/api/linkedin/email_finder/`,
+          {
+            method: 'POST',
+            headers: { Authorization, 'Content-Type': 'application/json' },
+            body: JSON.stringify([candidate]),
+          },
+          Number(args?.timeout_ms ?? defaultTimeoutMs),
+        );
         const text = await res.text();
         return jsonTextContent(JSON.parse(text));
       } catch (err: unknown) {
         return jsonTextContent({ error: String(err) });
       }
-    }
+    },
   );
 
   // 4. Get lead by LinkedIn URL
@@ -254,17 +298,22 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           people_also_viewed: Boolean(args.people_also_viewed),
           posts: Boolean(args.posts),
         };
-        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_link/`, {
-          method: 'POST',
-          headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        const res = await fetchWithTimeout(
+          fetcher,
+          `${apiBase}/api/linkedin/leads/by_link/`,
+          {
+            method: 'POST',
+            headers: { Authorization, 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+          Number(args?.timeout_ms ?? defaultTimeoutMs),
+        );
         const text = await res.text();
         return jsonTextContent(JSON.parse(text));
       } catch (err: unknown) {
         return jsonTextContent({ error: String(err) });
       }
-    }
+    },
   );
 
   // 5. Health check
@@ -278,19 +327,25 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     async (args, extra) => {
       if (debug) console.error('[mcp] health args:', JSON.stringify(args));
       const started = Date.now();
-      const testUrl = typeof args?.url === 'string' && args.url.trim()
-        ? args.url
-        : 'https://www.linkedin.com/in/satyanadella/';
+      const testUrl =
+        typeof args?.url === 'string' && args.url.trim() ? args.url : 'https://www.linkedin.com/in/satyanadella/';
       try {
         const Authorization = await resolveAuthHeader(extra);
-        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_link/`, {
-          method: 'POST',
-          headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: testUrl }),
-        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        const res = await fetchWithTimeout(
+          fetcher,
+          `${apiBase}/api/linkedin/leads/by_link/`,
+          {
+            method: 'POST',
+            headers: { Authorization, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: testUrl }),
+          },
+          Number(args?.timeout_ms ?? defaultTimeoutMs),
+        );
         const text = await res.text();
         let data: any = undefined;
-        try { data = JSON.parse(text); } catch {}
+        try {
+          data = JSON.parse(text);
+        } catch {}
         const ok = !!data?.lead?.linkedin_url;
         const payload = {
           ok,
@@ -300,8 +355,12 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         };
         return jsonTextContent(payload);
       } catch (err: unknown) {
-        return jsonTextContent({ ok: false, error: String(err), ms: Date.now() - started });
+        return jsonTextContent({
+          ok: false,
+          error: String(err),
+          ms: Date.now() - started,
+        });
       }
-    }
+    },
   );
 }

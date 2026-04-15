@@ -39,7 +39,12 @@ async function main() {
 
   // 1) leads by link (should be stable)
   try {
-    const r1 = await post('/api/linkedin/leads/by_link/', { url: 'https://www.linkedin.com/in/satyanadella/' }, key, 60000);
+    const r1 = await post(
+      '/api/linkedin/leads/by_link/',
+      { url: 'https://www.linkedin.com/in/satyanadella/' },
+      key,
+      60000,
+    );
     const ok = !!(r1 as any).json?.lead?.linkedin_url;
     console.log('by_link:', { ok, status: r1.status, url: (r1 as any).json?.lead?.linkedin_url ?? null });
   } catch (e) {
@@ -48,7 +53,12 @@ async function main() {
 
   // 2) companies by icp (can be empty)
   try {
-    const r2 = await post('/api/linkedin/companies/by_icp/', { keywords: ['Microsoft'], get_max_companies: true }, key, 60000);
+    const r2 = await post(
+      '/api/linkedin/companies/by_icp/',
+      { keywords: ['Microsoft'], get_max_companies: true },
+      key,
+      60000,
+    );
     const amount = (r2 as any).json?.amount ?? 0;
     const count = ((r2 as any).json?.companies || []).length;
     console.log('companies_by_icp:', { status: r2.status, amount, count });
@@ -58,7 +68,12 @@ async function main() {
 
   // 3) leads by icp minimal check
   try {
-    const r3 = await post('/api/linkedin/leads/by_icp/', { company_link: 'https://www.linkedin.com/company/microsoft/', limit: 1 }, key, 60000);
+    const r3 = await post(
+      '/api/linkedin/leads/by_icp/',
+      { company_link: 'https://www.linkedin.com/company/microsoft/', limit: 1 },
+      key,
+      60000,
+    );
     const leads = (r3 as any).json?.leads || [];
     console.log('leads_by_icp:', { status: r3.status, count: leads.length, sample: leads[0]?.linkedin_url ?? null });
   } catch (e) {
@@ -70,5 +85,3 @@ main().catch(err => {
   console.error(err);
   process.exit(1);
 });
-
-

@@ -57,7 +57,7 @@ export function registerClient(data: {
     metadataUrl: data.metadata_url,
     createdAt: Date.now(),
   };
-  
+
   clients.set(clientId, client);
   return client;
 }
@@ -114,7 +114,7 @@ export function createAuthCode(data: {
     expiresAt: Date.now() + 10 * 60 * 1000,
     scope: data.scope || 'generect:api',
   };
-  
+
   authCodes.set(code, authCode);
   return code;
 }
@@ -122,13 +122,13 @@ export function createAuthCode(data: {
 export function consumeAuthCode(code: string): AuthCode | null {
   const authCode = authCodes.get(code);
   if (!authCode) return null;
-  
+
   authCodes.delete(code);
-  
+
   if (Date.now() > authCode.expiresAt) {
     return null;
   }
-  
+
   return authCode;
 }
 

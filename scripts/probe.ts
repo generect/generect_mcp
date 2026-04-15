@@ -39,7 +39,12 @@ async function main() {
 
   // 1) leads/by_link
   try {
-    const r1 = await post('/api/linkedin/leads/by_link/', { url: 'https://www.linkedin.com/in/satyanadella/' }, key, 90000);
+    const r1 = await post(
+      '/api/linkedin/leads/by_link/',
+      { url: 'https://www.linkedin.com/in/satyanadella/' },
+      key,
+      90000,
+    );
     const ok = !!(r1 as any).json?.lead?.linkedin_url;
     console.log('by_link:', { ok, status: r1.status, url: (r1 as any).json?.lead?.linkedin_url ?? null });
   } catch (e) {
@@ -58,7 +63,12 @@ async function main() {
 
   // 3) leads/by_icp minimal
   try {
-    const r3 = await post('/api/linkedin/leads/by_icp/', { company_link: 'https://www.linkedin.com/company/microsoft/', limit: 1 }, key, 120000);
+    const r3 = await post(
+      '/api/linkedin/leads/by_icp/',
+      { company_link: 'https://www.linkedin.com/company/microsoft/', limit: 1 },
+      key,
+      120000,
+    );
     const leads = (r3 as any).json?.leads || [];
     console.log('leads_by_icp:', { status: r3.status, count: leads.length, sample: leads[0]?.linkedin_url ?? null });
   } catch (e) {
@@ -70,5 +80,3 @@ main().catch(err => {
   console.error(err);
   process.exit(1);
 });
-
-

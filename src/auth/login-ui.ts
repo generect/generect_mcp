@@ -271,12 +271,9 @@ export function renderLoginPage(params: {
 </html>`;
 }
 
-export function renderErrorPage(params: {
-  error: string;
-  errorDescription?: string;
-}): string {
+export function renderErrorPage(params: { error: string; errorDescription?: string }): string {
   const { error, errorDescription } = params;
-  
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -330,11 +327,7 @@ export function renderErrorPage(params: {
 </html>`;
 }
 
-export function renderRedirectPage(params: {
-  redirectUri: string;
-  authorizationCode: string;
-  state?: string;
-}): string {
+export function renderRedirectPage(params: { redirectUri: string; authorizationCode: string; state?: string }): string {
   const { redirectUri, authorizationCode, state } = params;
 
   // Build the final redirect URL with query parameters
@@ -449,9 +442,7 @@ export function renderRedirectPage(params: {
 }
 
 function escapeJs(str: string): string {
-  return str
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'");
+  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
 function escapeHtml(str: string): string {

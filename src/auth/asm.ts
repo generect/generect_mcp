@@ -19,7 +19,7 @@ export interface AuthorizationServerMetadata {
 
 export function getAuthorizationServerMetadata(): AuthorizationServerMetadata {
   const baseUrl = getOAuthBaseUrl();
-  
+
   return {
     issuer: baseUrl,
     authorization_endpoint: `${baseUrl}/oauth/authorize`,
@@ -57,13 +57,15 @@ export interface JwksResponse {
 export async function handleJwks(req: Request, res: Response): Promise<void> {
   const { getPublicKeyJwk } = await import('./jwt.js');
   const jwk = await getPublicKeyJwk();
-  
+
   const jwks: JwksResponse = {
-    keys: [{
-      ...jwk,
-      use: 'sig',
-    }],
+    keys: [
+      {
+        ...jwk,
+        use: 'sig',
+      },
+    ],
   };
-  
+
   res.json(jwks);
 }

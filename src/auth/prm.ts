@@ -14,7 +14,7 @@ export interface ProtectedResourceMetadata {
 export function getProtectedResourceMetadata(): ProtectedResourceMetadata {
   const baseUrl = getOAuthBaseUrl();
   const mcpEndpoint = getMcpEndpointUrl();
-  
+
   return {
     resource: mcpEndpoint,
     authorization_servers: [baseUrl],
