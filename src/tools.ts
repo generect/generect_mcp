@@ -2,6 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
 
+const debug = process.env.MCP_DEBUG === '1' || process.env.MCP_DEBUG === 'true';
+
 type Fetcher = typeof fetch;
 
 function jsonTextContent(value: unknown) {
@@ -36,6 +38,10 @@ function sanitizeCompany(company: any) {
 }
 
 async function fetchWithTimeout(fetcher: Fetcher, url: string, init: RequestInit, timeoutMs = 20000) {
+  if (debug) {
+    const body = init.body?.toString() || null;
+    console.error(`[mcp] doint request to ${url} with ${body}`);
+  }
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -80,7 +86,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     const apiToken = extractApiToken(payload);
     return apiToken;
   }
-  const defaultTimeoutMs = Number(process.env.GENERECT_TIMEOUT_MS || '120000');
+  const defaultTimeoutMs = Number(process.env.GENERECT_TIMEOUT_MS || '160000');
   const debug = process.env.MCP_DEBUG === '1' || process.env.MCP_DEBUG === 'true';
 
   // 1. Search leads by ICP
@@ -89,19 +95,25 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     'Search for leads by ICP filters',
     {
       job_title: z.string().describe('Job title filter (e.g., CEO, CTO, Engineer)').optional(),
-      location: z.string().describe('Location filter (e.g., San Francisco, New York)').optional(),
-      industry: z.string().describe('Industry filter (e.g., Technology, Healthcare)').optional(),
+      locations: z.array(z.string()).describe('Location filter (e.g., San Francisco, New York)').optional(),
+      lead_industries: z.array(z.string()).describe('Industry filter (e.g., Technology, Healthcare)').optional(),
       company_id: z.string().describe('LinkedIn company id').optional(),
       company_link: z.string().describe('LinkedIn company URL').optional(),
       company_name: z.string().describe('Company name').optional(),
-      limit: z.number().describe('Number of results to return').optional(),
-      offset: z.number().describe('Offset for pagination').optional(),
-      max_items: z.number().describe('Maximum items to include in response (local trim)').optional(),
+      limit_by: z.number().describe('Number of results to return').optional(),
+      offset_by: z.number().describe('Offset for pagination').optional(),
+      without_company: z.boolean().describe('Search leads without filrest by companies').optional(),
       compact: z.boolean().describe('Return compact summary instead of full JSON').optional(),
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args, extra) => {
       if (debug) console.error('[mcp] search_leads args:', JSON.stringify(args));
+
+      const body: typeof args & { personas?: any[] } = args;
+      if (args.job_title) {
+        body['personas'] = [[args.job_title, [args.job_title.toLowerCase()], [], []]];
+      }
+
       try {
         const Authorization = await resolveAuthHeader(extra);
         const res = await fetchWithTimeout(
@@ -117,19 +129,18 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const text = await res.text();
         const data = JSON.parse(text);
         const compact = args?.compact !== false;
-        const maxItems = Number(args?.max_items ?? args?.limit ?? 10);
         if (compact && data) {
           const leads = (data.leads ?? data.results ?? data.items ?? []) as any[];
-          const trimmed = leads.slice(0, Math.max(0, Math.min(maxItems, 50))).map(sanitizeLead);
+          const formated_leads = leads.map(sanitizeLead);
           return {
             structuredContent: {
               amount: data.amount ?? leads.length ?? null,
-              leads: trimmed,
+              leads: formated_leads,
             },
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({ amount: data.amount ?? trimmed.length, leads: trimmed }, null, 2),
+                text: JSON.stringify({ amount: data.amount ?? formated_leads.length, leads: formated_leads }, null, 2),
               },
             ],
           } as any;
@@ -150,8 +161,10 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       get_max_companies: z.boolean().describe('Get maximum companies').optional(),
       headcounts: z.array(z.string()).describe('Headcount ranges').optional(),
       industries: z.array(z.string()).describe('Industries').optional(),
+      locations: z.array(z.string()).describe('Locations (Countries, e.g "United States")').optional(),
       keywords: z.array(z.string()).describe('Keywords').optional(),
-      max_items: z.number().describe('Maximum items to include in response (local trim)').optional(),
+      limit_by: z.number().describe('Number of results to return').optional(),
+      offset_by: z.number().describe('Offset for pagination').optional(),
       compact: z.boolean().describe('Return compact summary instead of full JSON').optional(),
       fallback_from_leads: z.boolean().describe('If no companies, derive from leads by keywords').optional(),
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
@@ -212,21 +225,24 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           } catch {}
         }
         const compact = args?.compact !== false;
-        const maxItems = Number(args?.max_items ?? 10);
         if (compact && data) {
           const companies = (data.companies ?? data.results ?? data.items ?? []) as any[];
-          const trimmed = companies
-            .slice(0, Math.max(0, Math.min(maxItems, 50)))
-            .map((c: any) => (c.name || c.occurrences_in_leads ? c : sanitizeCompany(c)));
+          const forrmated_companies = companies.map((c: any) =>
+            c.name || c.occurrences_in_leads ? c : sanitizeCompany(c),
+          );
           return {
             structuredContent: {
               amount: data.amount ?? companies.length ?? null,
-              companies: trimmed,
+              companies: forrmated_companies,
             },
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({ amount: data.amount ?? trimmed.length, companies: trimmed }, null, 2),
+                text: JSON.stringify(
+                  { amount: data.amount ?? forrmated_companies.length, companies: forrmated_companies },
+                  null,
+                  2,
+                ),
               },
             ],
           } as any;
