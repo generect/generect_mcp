@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
+import { parseAuthHeader } from './auth/parse.js';
 
 const debug = process.env.MCP_DEBUG === '1' || process.env.MCP_DEBUG === 'true';
 
@@ -55,8 +56,9 @@ async function fetchWithTimeout(fetcher: Fetcher, url: string, init: RequestInit
 export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, apiKey: string) {
   async function resolveAuthHeader(extra: any): Promise<string> {
     const header = extra?.requestInfo?.headers?.authorization as string | undefined;
+    const parsed = parseAuthHeader(header);
 
-    if (!header || !header.trim()) {
+    if (!parsed) {
       const fallback = apiKey || '';
       if (!fallback) {
         throw new Error('Authorization header is required');
@@ -64,27 +66,15 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       return fallback.startsWith('Token ') ? fallback : `Token ${fallback}`;
     }
 
-    const match = header.match(/^Bearer\s+(.+)$/i);
-    if (!match) {
-      if (header.startsWith('Token ')) {
-        return header;
-      }
-      return `Token ${header}`;
+    if (parsed.kind === 'token') {
+      return `Token ${parsed.apiKey}`;
     }
 
-    const token = match[1];
-
-    if (token.startsWith('Token ')) {
-      return token;
-    }
-
-    const payload = await verifyAccessToken(token);
+    const payload = await verifyAccessToken(parsed.jwt);
     if (!payload) {
       throw new Error('Invalid or expired access token');
     }
-
-    const apiToken = extractApiToken(payload);
-    return apiToken;
+    return `Token ${extractApiToken(payload)}`;
   }
   const defaultTimeoutMs = Number(process.env.GENERECT_TIMEOUT_MS || '160000');
   const debug = process.env.MCP_DEBUG === '1' || process.env.MCP_DEBUG === 'true';

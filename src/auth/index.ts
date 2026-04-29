@@ -6,3 +6,4 @@ export * from './asm.js';
 export * from './login-ui.js';
 export * from './oauth.js';
 export * from './middleware.js';
+export * from './parse.js';

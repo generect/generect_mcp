@@ -40,6 +40,34 @@ When you first connect, the client will initiate an OAuth flow:
 | `/oauth/token` | Token endpoint |
 | `/oauth/register` | Dynamic Client Registration (RFC 7591) |
 
+### Direct API key (no OAuth)
+
+If your MCP client cannot complete the OAuth flow, you can pass the API key directly via the `Authorization` header. The server accepts any of:
+
+```
+Authorization: YOUR_API_KEY
+Authorization: Bearer YOUR_API_KEY
+Authorization: Token YOUR_API_KEY
+Authorization: Bearer Token YOUR_API_KEY   (legacy)
+```
+
+Example for `mcp-remote`:
+
+```json
+{
+  "mcpServers": {
+    "generect": {
+      "command": "mcp-remote",
+      "args": [
+        "https://mcp.generect.com/mcp",
+        "--header",
+        "Authorization: Bearer YOUR_API_KEY"
+      ]
+    }
+  }
+}
+```
+
 ### Local Installation (Alternative)
 
 For local development or when OAuth is not needed:
