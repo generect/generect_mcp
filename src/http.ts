@@ -17,9 +17,30 @@ import {
 
 const apiBase = process.env.GENERECT_API_BASE || 'https://api.generect.com';
 const rawApiKey = process.env.GENERECT_API_KEY || '';
-const apiKey = rawApiKey && rawApiKey.startsWith('Token ') ? rawApiKey : rawApiKey ? `Token ${rawApiKey}` : '';
+const apiKey = rawApiKey && rawApiKey.startsWith('Token ') ? rawApiKey : (rawApiKey ? `Token ${rawApiKey}` : '');
+const allowedOrigins = (process.env.MCP_ALLOWED_ORIGINS
+  ? process.env.MCP_ALLOWED_ORIGINS.split(',').map((origin) => origin.trim()).filter(Boolean)
+  : ['https://beta.generect.com', 'https://generect.com', 'https://app.generect.com']);
+
+const isAllowedOrigin = (origin: string): boolean => {
+  // Always allow localhost for local development.
+  if (/^https?:\/\/localhost(?::\d+)?$/i.test(origin)) return true;
+  if (/^https?:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin)) return true;
+  if (/^https:\/\/([a-z0-9-]+\.)*generect\.com$/i.test(origin)) return true;
+  return allowedOrigins.includes(origin);
+};
 
 const app = express();
+app.use(express.json());
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow non-browser clients (e.g. curl, MCP clients) that do not set Origin.
+    if (!origin) return callback(null, true);
+    if (isAllowedOrigin(origin)) return callback(null, true);
+    return callback(new Error('CORS origin is not allowed'));
+  },
+  exposedHeaders: ['Mcp-Session-Id'],
+}));
 
 app.use(express.urlencoded({ extended: true }));
 
