@@ -1,10 +1,15 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
+
+const debug = process.env.MCP_DEBUG === '1' || process.env.MCP_DEBUG === 'true';
 
 type Fetcher = typeof fetch;
 
 function jsonTextContent(value: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }],
+  };
 }
 
 function sanitizeLead(lead: any) {
@@ -32,12 +37,11 @@ function sanitizeCompany(company: any) {
   };
 }
 
-async function fetchWithTimeout(
-  fetcher: Fetcher,
-  url: string,
-  init: RequestInit,
-  timeoutMs = 20000
-) {
+async function fetchWithTimeout(fetcher: Fetcher, url: string, init: RequestInit, timeoutMs = 20000) {
+  if (debug) {
+    const body = init.body?.toString() || null;
+    console.error(`[mcp] doint request to ${url} with ${body}`);
+  }
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -49,66 +53,106 @@ async function fetchWithTimeout(
 }
 
 export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, apiKey: string) {
-  function resolveAuthHeader(extra: any): string {
+  async function resolveAuthHeader(extra: any): Promise<string> {
     const header = extra?.requestInfo?.headers?.authorization as string | undefined;
-    if (header && header.trim()) {
-      return header.startsWith('Token ') ? header : `Token ${header}`;
+
+    if (!header || !header.trim()) {
+      const fallback = apiKey || '';
+      if (!fallback) {
+        throw new Error('Authorization header is required');
+      }
+      return fallback.startsWith('Token ') ? fallback : `Token ${fallback}`;
     }
-    const fallback = apiKey || '';
-    if (!fallback) {
-      throw new Error('Authorization header is required');
+
+    const match = header.match(/^Bearer\s+(.+)$/i);
+    if (!match) {
+      if (header.startsWith('Token ')) {
+        return header;
+      }
+      return `Token ${header}`;
     }
-    return fallback.startsWith('Token ') ? fallback : `Token ${fallback}`;
+
+    const token = match[1];
+
+    if (token.startsWith('Token ')) {
+      return token;
+    }
+
+    const payload = await verifyAccessToken(token);
+    if (!payload) {
+      throw new Error('Invalid or expired access token');
+    }
+
+    const apiToken = extractApiToken(payload);
+    return apiToken;
   }
-  const defaultTimeoutMs = Number(process.env.GENERECT_TIMEOUT_MS || '120000');
+  const defaultTimeoutMs = Number(process.env.GENERECT_TIMEOUT_MS || '160000');
   const debug = process.env.MCP_DEBUG === '1' || process.env.MCP_DEBUG === 'true';
 
-  // 1. Пошук лідів по ICP (без компаній)
+  // 1. Search leads by ICP
   server.tool(
     'search_leads',
     'Search for leads by ICP filters',
     {
       job_title: z.string().describe('Job title filter (e.g., CEO, CTO, Engineer)').optional(),
-      location: z.string().describe('Location filter (e.g., San Francisco, New York)').optional(),
-      industry: z.string().describe('Industry filter (e.g., Technology, Healthcare)').optional(),
+      locations: z.array(z.string()).describe('Location filter (e.g., San Francisco, New York)').optional(),
+      lead_industries: z.array(z.string()).describe('Industry filter (e.g., Technology, Healthcare)').optional(),
       company_id: z.string().describe('LinkedIn company id').optional(),
       company_link: z.string().describe('LinkedIn company URL').optional(),
       company_name: z.string().describe('Company name').optional(),
-      limit: z.number().describe('Number of results to return').optional(),
-      offset: z.number().describe('Offset for pagination').optional(),
-      max_items: z.number().describe('Maximum items to include in response (local trim)').optional(),
+      limit_by: z.number().describe('Number of results to return').optional(),
+      offset_by: z.number().describe('Offset for pagination').optional(),
+      without_company: z.boolean().describe('Search leads without filrest by companies').optional(),
       compact: z.boolean().describe('Return compact summary instead of full JSON').optional(),
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
-    async (args: any, extra: any) => {
+    async (args, extra) => {
       if (debug) console.error('[mcp] search_leads args:', JSON.stringify(args));
+
+      const body: typeof args & { personas?: any[] } = args;
+      if (args.job_title) {
+        body['personas'] = [[args.job_title, [args.job_title.toLowerCase()], [], []]];
+      }
+
       try {
-        const Authorization = resolveAuthHeader(extra);
-        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_icp/`, {
-          method: 'POST',
-          headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify(args || {}),
-        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        const Authorization = await resolveAuthHeader(extra);
+        const res = await fetchWithTimeout(
+          fetcher,
+          `${apiBase}/api/linkedin/leads/by_icp/`,
+          {
+            method: 'POST',
+            headers: { Authorization, 'Content-Type': 'application/json' },
+            body: JSON.stringify(args || {}),
+          },
+          Number(args?.timeout_ms ?? defaultTimeoutMs),
+        );
         const text = await res.text();
         const data = JSON.parse(text);
-        const compact = args?.compact !== false; // default true
-        const maxItems = Number(args?.max_items ?? args?.limit ?? 10);
+        const compact = args?.compact !== false;
         if (compact && data) {
           const leads = (data.leads ?? data.results ?? data.items ?? []) as any[];
-          const trimmed = leads.slice(0, Math.max(0, Math.min(maxItems, 50))).map(sanitizeLead);
+          const formated_leads = leads.map(sanitizeLead);
           return {
-            structuredContent: { amount: data.amount ?? leads.length ?? null, leads: trimmed },
-            content: [{ type: 'text', text: JSON.stringify({ amount: data.amount ?? trimmed.length, leads: trimmed }, null, 2) }],
+            structuredContent: {
+              amount: data.amount ?? leads.length ?? null,
+              leads: formated_leads,
+            },
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({ amount: data.amount ?? formated_leads.length, leads: formated_leads }, null, 2),
+              },
+            ],
           } as any;
         }
         return jsonTextContent(data);
       } catch (err: unknown) {
         return jsonTextContent({ error: String(err) });
       }
-    }
+    },
   );
 
-  // 2. Пошук компаній (для лідів)
+  // 2. Search companies
   server.tool(
     'search_companies',
     'Search for companies by ICP filters',
@@ -117,33 +161,52 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       get_max_companies: z.boolean().describe('Get maximum companies').optional(),
       headcounts: z.array(z.string()).describe('Headcount ranges').optional(),
       industries: z.array(z.string()).describe('Industries').optional(),
+      locations: z.array(z.string()).describe('Locations (Countries, e.g "United States")').optional(),
       keywords: z.array(z.string()).describe('Keywords').optional(),
-      max_items: z.number().describe('Maximum items to include in response (local trim)').optional(),
+      limit_by: z.number().describe('Number of results to return').optional(),
+      offset_by: z.number().describe('Offset for pagination').optional(),
       compact: z.boolean().describe('Return compact summary instead of full JSON').optional(),
       fallback_from_leads: z.boolean().describe('If no companies, derive from leads by keywords').optional(),
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
-    async (args: any, extra: any) => {
+    async (args, extra) => {
       if (debug) console.error('[mcp] search_companies args:', JSON.stringify(args));
+
       try {
-        const Authorization = resolveAuthHeader(extra);
-        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/companies/by_icp/`, {
-          method: 'POST',
-          headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify(args || {}),
-        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
-        const text = await res.text();
-        let data = JSON.parse(text);
-        // Fallback: derive companies from leads by keywords when API returns nothing
-        const companiesEmpty = !data || !Array.isArray(data.companies) || data.companies.length === 0;
-        const shouldFallback = companiesEmpty && Array.isArray(args?.keywords) && args.keywords.length > 0 && args?.fallback_from_leads !== false;
-        if (shouldFallback) {
-          const leadsBody: Record<string, unknown> = { keywords: args.keywords, limit: 100 };
-          const resLeads = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_icp/`, {
+        const Authorization = await resolveAuthHeader(extra);
+        const res = await fetchWithTimeout(
+          fetcher,
+          `${apiBase}/api/linkedin/companies/by_icp/`,
+          {
             method: 'POST',
             headers: { Authorization, 'Content-Type': 'application/json' },
-            body: JSON.stringify(leadsBody),
-          }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+            body: JSON.stringify(args || {}),
+          },
+          Number(args?.timeout_ms ?? defaultTimeoutMs),
+        );
+        const text = await res.text();
+        let data = JSON.parse(text);
+        const companiesEmpty = !data || !Array.isArray(data.companies) || data.companies.length === 0;
+        const shouldFallback =
+          companiesEmpty &&
+          Array.isArray(args?.keywords) &&
+          args.keywords.length > 0 &&
+          args?.fallback_from_leads !== false;
+        if (shouldFallback) {
+          const leadsBody: Record<string, unknown> = {
+            keywords: args.keywords,
+            limit: 100,
+          };
+          const resLeads = await fetchWithTimeout(
+            fetcher,
+            `${apiBase}/api/linkedin/leads/by_icp/`,
+            {
+              method: 'POST',
+              headers: { Authorization, 'Content-Type': 'application/json' },
+              body: JSON.stringify(leadsBody),
+            },
+            Number(args?.timeout_ms ?? defaultTimeoutMs),
+          );
           const leadsText = await resLeads.text();
           try {
             const leadsData = JSON.parse(leadsText);
@@ -155,30 +218,43 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
                 counts.set(name, (counts.get(name) ?? 0) + 1);
               }
             }
-            const derived = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, occurrences_in_leads: count }));
+            const derived = Array.from(counts.entries())
+              .sort((a, b) => b[1] - a[1])
+              .map(([name, count]) => ({ name, occurrences_in_leads: count }));
             data = { amount: derived.length, companies: derived };
-          } catch {
-            // ignore fallback parse errors
-          }
+          } catch {}
         }
-        const compact = args?.compact !== false; // default true
-        const maxItems = Number(args?.max_items ?? 10);
+        const compact = args?.compact !== false;
         if (compact && data) {
           const companies = (data.companies ?? data.results ?? data.items ?? []) as any[];
-          const trimmed = companies.slice(0, Math.max(0, Math.min(maxItems, 50))).map((c: any) => (c.name || c.occurrences_in_leads ? c : sanitizeCompany(c)));
+          const forrmated_companies = companies.map((c: any) =>
+            c.name || c.occurrences_in_leads ? c : sanitizeCompany(c),
+          );
           return {
-            structuredContent: { amount: data.amount ?? companies.length ?? null, companies: trimmed },
-            content: [{ type: 'text', text: JSON.stringify({ amount: data.amount ?? trimmed.length, companies: trimmed }, null, 2) }],
+            structuredContent: {
+              amount: data.amount ?? companies.length ?? null,
+              companies: forrmated_companies,
+            },
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  { amount: data.amount ?? forrmated_companies.length, companies: forrmated_companies },
+                  null,
+                  2,
+                ),
+              },
+            ],
           } as any;
         }
         return jsonTextContent(data);
       } catch (err: unknown) {
         return jsonTextContent({ error: String(err) });
       }
-    }
+    },
   );
 
-  // 3. Email finder по лідах  
+  // 3. Email finder
   server.tool(
     'generate_email',
     'Generate email by first/last name and domain via Generect Email Generator',
@@ -188,29 +264,34 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       domain: z.string().describe('Company domain without protocol (e.g., generect.com)'),
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
-    async (args: any, extra: any) => {
+    async (args, extra) => {
       if (debug) console.error('[mcp] generate_email args:', JSON.stringify(args));
       try {
-        const Authorization = resolveAuthHeader(extra);
+        const Authorization = await resolveAuthHeader(extra);
         const candidate = {
           first_name: args.first_name,
           last_name: args.last_name,
-          domain: args.domain
+          domain: args.domain,
         };
-        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/email_finder/`, {
-          method: 'POST',
-          headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify([candidate]),
-        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        const res = await fetchWithTimeout(
+          fetcher,
+          `${apiBase}/api/linkedin/email_finder/`,
+          {
+            method: 'POST',
+            headers: { Authorization, 'Content-Type': 'application/json' },
+            body: JSON.stringify([candidate]),
+          },
+          Number(args?.timeout_ms ?? defaultTimeoutMs),
+        );
         const text = await res.text();
         return jsonTextContent(JSON.parse(text));
       } catch (err: unknown) {
         return jsonTextContent({ error: String(err) });
       }
-    }
+    },
   );
 
-  // 4. Апдейт по лінкединах
+  // 4. Get lead by LinkedIn URL
   server.tool(
     'get_lead_by_url',
     'Get Lead by LinkedIn URL',
@@ -225,7 +306,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     async (args: any, extra: any) => {
       if (debug) console.error('[mcp] get_lead_by_url args:', JSON.stringify(args));
       try {
-        const Authorization = resolveAuthHeader(extra);
+        const Authorization = await resolveAuthHeader(extra);
         const payload = {
           url: args.url,
           comments: Boolean(args.comments),
@@ -233,17 +314,22 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           people_also_viewed: Boolean(args.people_also_viewed),
           posts: Boolean(args.posts),
         };
-        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_link/`, {
-          method: 'POST',
-          headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        const res = await fetchWithTimeout(
+          fetcher,
+          `${apiBase}/api/linkedin/leads/by_link/`,
+          {
+            method: 'POST',
+            headers: { Authorization, 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+          Number(args?.timeout_ms ?? defaultTimeoutMs),
+        );
         const text = await res.text();
         return jsonTextContent(JSON.parse(text));
       } catch (err: unknown) {
         return jsonTextContent({ error: String(err) });
       }
-    }
+    },
   );
 
   // 5. Health check
@@ -254,22 +340,28 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       url: z.string().describe('LinkedIn profile URL to validate (defaults to a public profile)').optional(),
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
-    async (args: any, extra: any) => {
+    async (args, extra) => {
       if (debug) console.error('[mcp] health args:', JSON.stringify(args));
       const started = Date.now();
-      const testUrl = typeof args?.url === 'string' && args.url.trim()
-        ? args.url
-        : 'https://www.linkedin.com/in/satyanadella/';
+      const testUrl =
+        typeof args?.url === 'string' && args.url.trim() ? args.url : 'https://www.linkedin.com/in/satyanadella/';
       try {
-        const Authorization = resolveAuthHeader(extra);
-        const res = await fetchWithTimeout(fetcher, `${apiBase}/api/linkedin/leads/by_link/`, {
-          method: 'POST',
-          headers: { Authorization, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: testUrl }),
-        }, Number(args?.timeout_ms ?? defaultTimeoutMs));
+        const Authorization = await resolveAuthHeader(extra);
+        const res = await fetchWithTimeout(
+          fetcher,
+          `${apiBase}/api/linkedin/leads/by_link/`,
+          {
+            method: 'POST',
+            headers: { Authorization, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: testUrl }),
+          },
+          Number(args?.timeout_ms ?? defaultTimeoutMs),
+        );
         const text = await res.text();
         let data: any = undefined;
-        try { data = JSON.parse(text); } catch {}
+        try {
+          data = JSON.parse(text);
+        } catch {}
         const ok = !!data?.lead?.linkedin_url;
         const payload = {
           ok,
@@ -279,8 +371,12 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         };
         return jsonTextContent(payload);
       } catch (err: unknown) {
-        return jsonTextContent({ ok: false, error: String(err), ms: Date.now() - started });
+        return jsonTextContent({
+          ok: false,
+          error: String(err),
+          ms: Date.now() - started,
+        });
       }
-    }
+    },
   );
 }
