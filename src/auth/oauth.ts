@@ -106,6 +106,14 @@ async function resolveClient(clientId: string): Promise<OAuthClient | null> {
         : [metadata.response_types]
       : ['code'];
 
+    // Validate redirect URIs from metadata document against allowlist
+    for (const uri of metadata.redirect_uris) {
+      if (!isValidRedirectUri(uri)) {
+        console.error(`[oauth] Rejected metadata client ${clientId}: disallowed redirect_uri ${uri}`);
+        return null;
+      }
+    }
+
     client = registerClient({
       client_name: metadata.client_name,
       redirect_uris: metadata.redirect_uris,
@@ -153,6 +161,18 @@ async function handleAuthorizeGet(req: Request, res: Response) {
     res
       .status(400)
       .send(renderErrorPage({ error: 'invalid_request', errorDescription: 'PKCE code_challenge is required' }));
+    return;
+  }
+
+  if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
+    res
+      .status(400)
+      .send(
+        renderErrorPage({
+          error: 'invalid_request',
+          errorDescription: 'Only S256 code_challenge_method is supported',
+        }),
+      );
     return;
   }
 
@@ -406,7 +426,7 @@ async function handleRegister(req: Request, res: Response) {
     if (!isValidRedirectUri(uri)) {
       res.status(400).json({
         error: 'invalid_redirect_uri',
-        error_description: `Invalid redirect URI: ${uri}. Must be localhost or HTTPS.`,
+        error_description: `Invalid redirect URI: ${uri}. Must be localhost or an allowed domain (*.generect.com, claude.ai, or MCP_ALLOWED_REDIRECT_DOMAINS).`,
       });
       return;
     }
@@ -444,19 +464,39 @@ async function handleRegister(req: Request, res: Response) {
   });
 }
 
+/**
+ * Returns true if the hostname is on the redirect URI allowlist.
+ * Allowlist: localhost/private IPs, *.generect.com, claude.ai, and any
+ * extra comma-separated hostnames in MCP_ALLOWED_REDIRECT_DOMAINS.
+ */
+function isAllowedRedirectHostname(hostname: string): boolean {
+  // localhost / private networks
+  if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
+  if (/^192\.168\./.test(hostname)) return true;
+  if (/^10\./.test(hostname)) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)) return true;
+
+  // Generect product domains
+  if (/^([a-z0-9-]+\.)*generect\.com$/i.test(hostname)) return true;
+
+  // Claude.ai — primary MCP client
+  if (hostname === 'claude.ai') return true;
+
+  // Extra domains configured at deploy time
+  const extra = (process.env.MCP_ALLOWED_REDIRECT_DOMAINS ?? '')
+    .split(',')
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
+  return extra.includes(hostname.toLowerCase());
+}
+
 function isValidRedirectUri(uri: string): boolean {
   try {
     const url = new URL(uri);
-    if (url.protocol === 'http:') {
-      const isLocalhost =
-        url.hostname === 'localhost' ||
-        url.hostname === '127.0.0.1' ||
-        url.hostname.startsWith('192.168.') ||
-        url.hostname.startsWith('10.');
-      const isPrivate = url.hostname.match(/^172\.(1[6-9]|2[0-9]|3[0-1])\./) !== null;
-      return isLocalhost || isPrivate;
-    }
-    return url.protocol === 'https:';
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    if (url.protocol === 'http:' && !isAllowedRedirectHostname(url.hostname)) return false;
+    if (url.protocol === 'https:' && !isAllowedRedirectHostname(url.hostname)) return false;
+    return true;
   } catch {
     return false;
   }
