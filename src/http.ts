@@ -39,7 +39,7 @@ app.use(cors({
     if (isAllowedOrigin(origin)) return callback(null, true);
     return callback(new Error('CORS origin is not allowed'));
   },
-  exposedHeaders: ['Mcp-Session-Id'],
+  exposedHeaders: ['Mcp-Session-Id', 'WWW-Authenticate'],
 }));
 
 app.use(express.urlencoded({ extended: true }));
@@ -49,13 +49,6 @@ app.use(
     verify: (req: any, _res, buf) => {
       req.rawBody = buf?.toString() ?? '';
     },
-  }),
-);
-
-app.use(
-  cors({
-    origin: '*',
-    exposedHeaders: ['Mcp-Session-Id', 'WWW-Authenticate'],
   }),
 );
 
