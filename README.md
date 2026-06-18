@@ -79,7 +79,7 @@ For local development or when OAuth is not needed:
 ```bash
 GENERECT_API_BASE=https://api.generect.com
 GENERECT_API_KEY=Token <api-key>
-GENERECT_TIMEOUT_MS=60000
+GENERECT_TIMEOUT_MS=300000
 JWT_SIGNING_KEY=<your-secret-key-for-jwt-signing>
 TOKEN_ENCRYPTION_KEY=<32-byte-hex-key-for-token-encryption>
 ```
@@ -95,6 +95,29 @@ npm run dev:http
 
 ```bash
 npm run build && npm start
+```
+
+### Logging
+
+The server emits one structured JSON log line per event to **stderr** (stdout is reserved for the MCP stdio protocol). Logging is **on by default**; set `MCP_LOG=0` to disable it.
+
+Events:
+
+| `event` | When | Key fields |
+|---------|------|------------|
+| `tool_call` | LLM invokes a tool | `reqId`, `tool`, `input` (raw args from the LLM) |
+| `api_request` | Outbound call to Generect API | `url`, `method`, `body` (filter payload; never the token) |
+| `api_response` | Generect API responded | `url`, `status`, `ms` |
+| `tool_result` | Result returned to the LLM | `reqId`, `tool`, `ms`, `output` (text/structuredContent preview) |
+| `tool_error` / `api_error` | Failure | `reqId`/`url`, `error`, `ms` |
+
+`reqId` correlates a `tool_call` with its `tool_result`. Set `MCP_DEBUG=1` for additional verbose output.
+
+View logs on the deployed container:
+
+```bash
+docker logs -f <mcp-container>                 # live
+docker logs <mcp-container> | grep tool_call   # only LLM inputs
 ```
 
 ### Tools
@@ -116,7 +139,7 @@ npm run build && npm start
       "env": {
         "GENERECT_API_BASE": "https://api.generect.com",
         "GENERECT_API_KEY": "Token YOUR_API_KEY",
-        "GENERECT_TIMEOUT_MS": "60000"
+        "GENERECT_TIMEOUT_MS": "300000"
       }
     }
   }
@@ -136,7 +159,7 @@ Add to `~/.claude/claude_desktop_config.json` (or via UI → MCP Servers). Recom
       "env": {
         "GENERECT_API_BASE": "https://api.generect.com",
         "GENERECT_API_KEY": "Token YOUR_API_KEY",
-        "GENERECT_TIMEOUT_MS": "60000",
+        "GENERECT_TIMEOUT_MS": "300000",
         "MCP_DEBUG": "0"
       }
     }
@@ -204,7 +227,7 @@ Some MCP clients allow spawning the server via SSH, using stdio over the SSH ses
       "env": {
         "GENERECT_API_BASE": "https://api.generect.com",
         "GENERECT_API_KEY": "Token YOUR_API_KEY",
-        "GENERECT_TIMEOUT_MS": "60000"
+        "GENERECT_TIMEOUT_MS": "300000"
       }
     }
   }

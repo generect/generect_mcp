@@ -25,7 +25,7 @@ COPY --from=build /app/dist ./dist
 
 ENV NODE_ENV=production \
     GENERECT_API_BASE=https://api.generect.com \
-    GENERECT_TIMEOUT_MS=60000
+    GENERECT_TIMEOUT_MS=300000
 
 EXPOSE 3000
 
