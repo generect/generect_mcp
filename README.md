@@ -99,25 +99,28 @@ npm run build && npm start
 
 ### Logging
 
-The server emits one structured JSON log line per event to **stderr** (stdout is reserved for the MCP stdio protocol). Logging is **on by default**; set `MCP_LOG=0` to disable it.
+The server emits one structured JSON log line per event to **stderr** (stdout is reserved for the MCP stdio protocol). Metadata logging is **on by default**; set `MCP_LOG=0` to disable it entirely.
+
+**Privacy — payloads are redacted by default.** Request/response payloads can contain personal data of prospects (names, company domains, generated emails). By default these values are **not** logged verbatim: each is reduced to a non-identifying shape marker (e.g. `"first_name": "<str:4>"`), so you can see *which* fields were sent without recording the data itself. Set `MCP_LOG_PAYLOADS=1` to log payloads verbatim — intended for short-lived debugging, with the data owner's consent.
 
 Events:
 
 | `event` | When | Key fields |
 |---------|------|------------|
-| `tool_call` | LLM invokes a tool | `reqId`, `tool`, `input` (raw args from the LLM) |
-| `api_request` | Outbound call to Generect API | `url`, `method`, `body` (filter payload; never the token) |
+| `tool_call` | LLM invokes a tool | `reqId`, `tool`, `input` (redacted unless `MCP_LOG_PAYLOADS=1`) |
+| `api_request` | Outbound call to Generect API | `url`, `method`, `body` (redacted unless `MCP_LOG_PAYLOADS=1`; never the token) |
 | `api_response` | Generect API responded | `url`, `status`, `ms` |
-| `tool_result` | Result returned to the LLM | `reqId`, `tool`, `ms`, `output` (text/structuredContent preview) |
+| `tool_result` | Result returned to the LLM | `reqId`, `tool`, `ms`, `output` (redacted unless `MCP_LOG_PAYLOADS=1`) |
 | `tool_error` / `api_error` | Failure | `reqId`/`url`, `error`, `ms` |
 
 `reqId` correlates a `tool_call` with its `tool_result`. Set `MCP_DEBUG=1` for additional verbose output.
 
-View logs on the deployed container:
+The hosted server runs under **PM2** (not Docker). View logs on the host with:
 
 ```bash
-docker logs -f <mcp-container>                 # live
-docker logs <mcp-container> | grep tool_call   # only LLM inputs
+pm2 logs generect-mcp                                # live
+pm2 logs generect-mcp --err                          # errors only
+grep tool_call ~/.pm2/logs/generect-mcp-out.log      # only LLM tool inputs
 ```
 
 ### Tools
@@ -188,22 +191,40 @@ Then use:
 { "command": "/usr/local/bin/generect-mcp", "args": [] }
 ```
 
+### Deployment (production, PM2)
+
+The hosted server (`https://mcp.generect.com`) runs under **PM2** on the host, fronted by nginx (TLS). The process is defined by [`ecosystem.config.js`](./ecosystem.config.js):
+
+```bash
+npm ci && npm run build
+pm2 start ecosystem.config.js      # or: pm2 reload ecosystem.config.js
+pm2 save                           # persist the process list for reboot
+# once, as root, so it survives reboots:
+#   pm2 startup systemd -u mcp_user --hp /home/mcp_user
+```
+
+**Single instance only.** OAuth state (registered clients, auth codes) and MCP sessions are held in memory, so the server must run as one instance. Scaling horizontally requires a shared store (e.g. Redis) first — see `ecosystem.config.js`.
+
+**Required secrets (fail-closed).** In production (`NODE_ENV=production`) the server refuses to start unless `JWT_SIGNING_KEY` is set to a strong, non-default value; it never falls back to a hardcoded default or an ephemeral key. `TOKEN_ENCRYPTION_KEY`, if set, must be exactly 64 hex characters (32 bytes).
+
 ### Docker
 
-Build locally:
+Docker is supported for local/alternative runs. Build locally:
 
 ```bash
 docker build -t ghcr.io/generect/generect_mcp:local .
 ```
 
-Run the server in a container:
+Run the server in a container (note: the same production secrets are required — an
+insecure default will cause the container to exit at startup):
 
 ```bash
 docker run --rm \
+  -e NODE_ENV=production \
   -e GENERECT_API_BASE=https://api.generect.com \
   -e GENERECT_API_KEY="Token YOUR_API_KEY" \
-  -e JWT_SIGNING_KEY="your-secret-key" \
-  -e TOKEN_ENCRYPTION_KEY="0123456789abcdef0123456789abcdef" \
+  -e JWT_SIGNING_KEY="a-strong-random-secret" \
+  -e TOKEN_ENCRYPTION_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" \
   -e OAUTH_BASE_URL=https://your-domain.com \
   -p 3000:3000 \
   ghcr.io/generect/generect_mcp:local
@@ -251,7 +272,9 @@ npm run mcp:client -- <api-key>
 ### Security Notes
 
 - **OAuth tokens** are JWTs signed by the server and contain your encrypted API token
-- **Token encryption** uses AES-256-GCM with keys derived from your configuration
+- **Token encryption** uses AES-256-GCM with a key from `TOKEN_ENCRYPTION_KEY` (or derived from `JWT_SIGNING_KEY`)
+- **Fail-closed secrets** — in production the server refuses to start with a missing or well-known-default `JWT_SIGNING_KEY`, and never publishes symmetric key material in the JWKS
 - **PKCE** is required for all authorization code flows (S256 method)
 - **Dynamic Client Registration** allows any MCP client to self-register
 - **Audience validation** ensures tokens are only used with this MCP server
+- **Log privacy** — prospect payloads are redacted from logs by default (`MCP_LOG_PAYLOADS=1` to opt in)
