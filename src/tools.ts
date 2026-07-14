@@ -4,21 +4,61 @@ import { randomUUID } from 'node:crypto';
 import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
 import { parseAuthHeader } from './auth/parse.js';
 
-// Structured request/response logging is ON by default; set MCP_LOG=0 to disable.
-const logEnabled = process.env.MCP_LOG !== '0' && process.env.MCP_LOG !== 'false';
+// Structured request/response logging.
+//   - Metadata (tool name, timing, status, correlation id) is logged by default;
+//     set MCP_LOG=0 to disable logging entirely.
+//   - Request/response PAYLOADS may contain personal data of prospects (names,
+//     company domains, generated emails). They are NOT logged verbatim by
+//     default — each value is reduced to a non-identifying shape summary. Set
+//     MCP_LOG_PAYLOADS=1 to log payloads verbatim (short-lived debugging, with
+//     the data owner's consent).
+// Both switches are read live (per event), so they can be toggled without a
+// restart and are trivial to exercise in tests.
+const isLogEnabled = () => process.env.MCP_LOG !== '0' && process.env.MCP_LOG !== 'false';
+const isPayloadLoggingEnabled = () => process.env.MCP_LOG_PAYLOADS === '1' || process.env.MCP_LOG_PAYLOADS === 'true';
 
 type Fetcher = typeof fetch;
 
 // One JSON line per event, written to stderr (stdout is reserved for the MCP
-// stdio protocol, so logs must never go there). Captures what the LLM sends in
-// and what it gets back, correlated by reqId.
+// stdio protocol, so logs must never go there). Correlated by reqId.
 function logEvent(event: string, data: Record<string, unknown>) {
-  if (!logEnabled) return;
+  if (!isLogEnabled()) return;
   try {
     console.error(JSON.stringify({ ts: new Date().toISOString(), event, ...data }));
   } catch {
-    console.error(`[mcp] ${event}`, data);
+    // Never let logging (e.g. a value that cannot be serialized) break a request.
+    console.error(`[mcp] ${event}`);
   }
+}
+
+// Reduce a value to a non-identifying summary unless payload logging is
+// explicitly enabled. Object keys are preserved (so you can see WHICH fields
+// were sent), but their values become `<type:length>` markers. Bounded in depth
+// and breadth, so it is safe on large or cyclic structures.
+export function redact(value: unknown, depth = 0): unknown {
+  if (isPayloadLoggingEnabled()) return value;
+  if (value === null || value === undefined) return value;
+
+  const t = typeof value;
+  if (t === 'string') return `<str:${(value as string).length}>`;
+  if (t === 'number' || t === 'boolean' || t === 'bigint') return `<${t}>`;
+  if (t === 'function' || t === 'symbol') return `<${t}>`;
+  if (value instanceof Date) return '<date>';
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) return `<buffer:${(value as Buffer).length}>`;
+
+  if (Array.isArray(value)) {
+    if (depth >= 4) return `<array:${value.length}>`;
+    return value.slice(0, 20).map(v => redact(v, depth + 1));
+  }
+  if (t === 'object') {
+    if (depth >= 4) return '<object>';
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(value as object).slice(0, 50)) {
+      out[k] = redact((value as Record<string, unknown>)[k], depth + 1);
+    }
+    return out;
+  }
+  return `<${t}>`;
 }
 
 // Pull a readable preview of what is returned to the LLM out of an MCP result.
@@ -47,14 +87,14 @@ function loggedTool(
   server.tool(name, description, schema, async (args: any, extra: any) => {
     const reqId = randomUUID();
     const started = Date.now();
-    logEvent('tool_call', { reqId, tool: name, input: args });
+    logEvent('tool_call', { reqId, tool: name, input: redact(args) });
     try {
       const result = await handler(args, extra);
       logEvent('tool_result', {
         reqId,
         tool: name,
         ms: Date.now() - started,
-        output: previewResult(result),
+        output: redact(previewResult(result)),
       });
       return result;
     } catch (err: unknown) {
@@ -102,7 +142,7 @@ async function fetchWithTimeout(fetcher: Fetcher, url: string, init: RequestInit
   try {
     if (typeof reqBody === 'string') reqBody = JSON.parse(reqBody);
   } catch {}
-  logEvent('api_request', { url, method: init.method ?? 'GET', body: reqBody });
+  logEvent('api_request', { url, method: init.method ?? 'GET', body: redact(reqBody) });
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   const started = Date.now();
@@ -118,7 +158,12 @@ async function fetchWithTimeout(fetcher: Fetcher, url: string, init: RequestInit
         errorBody = t.length > 2000 ? `${t.slice(0, 2000)}…(${t.length} chars)` : t;
       } catch {}
     }
-    logEvent('api_response', { url, status: res.status, ms: Date.now() - started, ...(errorBody ? { errorBody } : {}) });
+    logEvent('api_response', {
+      url,
+      status: res.status,
+      ms: Date.now() - started,
+      ...(errorBody ? { errorBody } : {}),
+    });
     return res;
   } catch (err: unknown) {
     logEvent('api_error', { url, ms: Date.now() - started, error: String(err) });
@@ -208,7 +253,9 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         .optional(),
       lead_industries: z
         .array(z.string())
-        .describe('Industry filter. Must match Generect industry names exactly (e.g. "Information Technology and Services", "Financial Services"). Invalid names are rejected by the API.')
+        .describe(
+          'Industry filter. Must match Generect industry names exactly (e.g. "Information Technology and Services", "Financial Services"). Invalid names are rejected by the API.',
+        )
         .optional(),
       company_id: z.string().describe('LinkedIn company id').optional(),
       company_link: z.string().describe('LinkedIn company URL').optional(),
@@ -270,16 +317,22 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     {
       company_types: z
         .array(z.string())
-        .describe('Company types. Allowed values: "Public Company", "Educational", "Self Employed", "Government Agency", "Non Profit", "Self Owned", "Privately Held", "Partnership".')
+        .describe(
+          'Company types. Allowed values: "Public Company", "Educational", "Self Employed", "Government Agency", "Non Profit", "Self Owned", "Privately Held", "Partnership".',
+        )
         .optional(),
       get_max_companies: z.boolean().describe('Get maximum companies').optional(),
       headcounts: z
         .array(z.string())
-        .describe('Employee headcount ranges. Allowed values ONLY: "1", "2-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10000+". Note the largest bucket is "10000+" (NOT "10001+").')
+        .describe(
+          'Employee headcount ranges. Allowed values ONLY: "1", "2-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10000+". Note the largest bucket is "10000+" (NOT "10001+").',
+        )
         .optional(),
       industries: z
         .array(z.string())
-        .describe('Industries. Must match Generect industry names exactly (e.g. "Software Development", "Financial Services"). Invalid names are rejected by the API.')
+        .describe(
+          'Industries. Must match Generect industry names exactly (e.g. "Software Development", "Financial Services"). Invalid names are rejected by the API.',
+        )
         .optional(),
       locations: z.array(z.string()).describe('Locations (countries, e.g. ["United States"])').optional(),
       keywords: z.array(z.string()).describe('Keywords').optional(),

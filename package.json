@@ -1,6 +1,6 @@
 {
   "name": "generect-ultimate-mcp",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Minimal MCP server exposing Generect Live API tools.",
   "license": "MIT",
@@ -30,13 +30,15 @@
     "mcp:client": "tsx scripts/mcp-client.ts",
     "health": "tsx scripts/health.ts",
     "probe": "tsx scripts/probe.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "check-version": "node scripts/check-version.mjs",
     "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\""
   },
   "bin": {
     "generect-mcp": "dist/cli.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
