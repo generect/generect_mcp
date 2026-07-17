@@ -1,6 +1,6 @@
 {
   "name": "generect-ultimate-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "Minimal MCP server exposing Generect Live API tools.",
   "license": "MIT",
