@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
 import { parseAuthHeader } from './auth/parse.js';
+import { VERSION } from './version.js';
 
 // Structured request/response logging.
 //   - Metadata (tool name, timing, status, correlation id) is logged by default;
@@ -222,6 +223,50 @@ function toApiFilters(args: any) {
   return filters as Record<string, unknown>;
 }
 
+// A single call must never trigger an unbounded pull (which bills a large number
+// of credits). `get_max_leads:true` with no limit still returns the total-available
+// COUNT, but we bound how many rows are actually fetched. Callers who want more
+// paginate across calls (using exclude_ids to skip already-seen leads, since the
+// engine is non-deterministic and has no stable offset).
+const MAX_RESULT_LIMIT = Number(process.env.MCP_MAX_RESULT_LIMIT || '100');
+const DEFAULT_RESULT_LIMIT = 25;
+
+function clampLimit(body: Record<string, unknown>): void {
+  let n = body.limit_by as number | undefined;
+  if (n == null || Number.isNaN(Number(n))) n = DEFAULT_RESULT_LIMIT;
+  n = Math.max(1, Math.min(MAX_RESULT_LIMIT, Math.floor(Number(n))));
+  body.limit_by = n;
+}
+
+// Title keywords that pull in low-signal matches (assistants, interns, students)
+// when a broad title is used. Applied as persona exclusions unless the caller
+// supplies their own `exclude_title_keywords` (pass [] to disable).
+const DEFAULT_TITLE_EXCLUSIONS = ['assistant', 'intern', 'junior', 'student', 'trainee'];
+
+// Build the by_icp `personas` value from friendly inputs. Real ICP personas are a
+// tuple: [label, [included title keywords (OR)], [secondary keywords], [excluded
+// keywords]]. The old MCP sent a single lowercased title with no exclusions, which
+// both under-matched (no synonyms) and over-matched (kept junior noise). We now
+// accept multiple titles and apply sensible exclusions.
+function buildPersonas(args: any): any[] | undefined {
+  if (Array.isArray(args.personas) && args.personas.length > 0) return args.personas; // power-user passthrough
+  const titles: string[] = Array.isArray(args.job_titles)
+    ? args.job_titles.filter((t: unknown) => typeof t === 'string' && t.trim())
+    : args.job_title
+      ? [args.job_title]
+      : [];
+  if (titles.length === 0) return undefined;
+  const exclusions = Array.isArray(args.exclude_title_keywords)
+    ? args.exclude_title_keywords
+    : DEFAULT_TITLE_EXCLUSIONS;
+  const label = titles.length === 1 ? titles[0] : `Target titles (${titles.length})`;
+  return [[label, titles, [], exclusions]];
+}
+
+// Fields the MCP consumes to build the request but that must NOT be forwarded to
+// the API verbatim (they are not by_icp filters).
+const LEAD_CONTROL_FIELDS = ['job_title', 'job_titles', 'personas', 'exclude_title_keywords'];
+
 export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, apiKey: string) {
   async function resolveAuthHeader(extra: any): Promise<string> {
     const header = extra?.requestInfo?.headers?.authorization as string | undefined;
@@ -251,37 +296,138 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     server,
     'search_leads',
-    'Search for leads by ICP filters',
+    'Search for leads (people) matching an Ideal Customer Profile. NOTE: results are non-deterministic — the same query returns a different sample of matching leads on each call (live LinkedIn data, no stable ordering). To paginate or avoid duplicates across calls, pass the sales_ids you have already seen in exclude_ids. This endpoint returns profile data only (no emails/phones) — use generate_email to resolve an email.',
     {
-      job_title: z.string().describe('Job title filter (e.g., CEO, CTO, Engineer)').optional(),
+      job_title: z.string().describe('Single job title (e.g., "CEO"). For multiple titles use job_titles.').optional(),
+      job_titles: z
+        .array(z.string())
+        .describe(
+          'One or more target job titles, OR-matched (e.g. ["CEO","Founder","Owner","President"]). Preferred over job_title. Assistant/intern/junior/student/trainee are excluded by default; override with exclude_title_keywords.',
+        )
+        .optional(),
+      exclude_title_keywords: z
+        .array(z.string())
+        .describe(
+          'Title keywords to exclude from persona matching. Defaults to [assistant, intern, junior, student, trainee]; pass [] to disable.',
+        )
+        .optional(),
+      seniorities: z
+        .array(z.string())
+        .describe(
+          'Seniority levels (LinkedIn Sales-Nav categories, e.g. ["Director","VP","Head","Owner","Manager"]). Validated by the API.',
+        )
+        .optional(),
+      functions: z
+        .array(z.string())
+        .describe(
+          'Job functions (LinkedIn Sales-Nav categories, e.g. ["Engineering","Operations","Marketing","Sales","Finance"]). Validated by the API.',
+        )
+        .optional(),
+      keywords: z
+        .array(z.string())
+        .describe('Free-text keywords matched against the profile (Boolean phrases allowed).')
+        .optional(),
       locations: z
         .array(z.string())
-        .describe('Location filter — country or region names, e.g. ["United States", "Canada"]')
+        .describe('Lead location filter — country/region names, e.g. ["United States","Canada"].')
         .optional(),
       lead_industries: z
         .array(z.string())
         .describe(
-          'Industry filter. Must match Generect industry names exactly (e.g. "Information Technology and Services", "Financial Services"). Invalid names are rejected by the API.',
+          'Lead personal-industry filter. Must match Generect industry names exactly (e.g. "Financial Services", "IT Services and IT Consulting"). Names are hierarchical (Financial Services includes Banking/Insurance). Invalid names are rejected (HTTP 400).',
         )
         .optional(),
-      company_id: z.string().describe('LinkedIn company id').optional(),
-      company_link: z.string().describe('LinkedIn company URL').optional(),
-      company_name: z.string().describe('Company name').optional(),
-      limit_by: z.number().describe('Number of results to return').optional(),
-      offset_by: z.number().describe('Offset for pagination').optional(),
+      company_industries: z
+        .array(z.string())
+        .describe("Filter by the lead employer's industry (same taxonomy as lead_industries).")
+        .optional(),
+      company_headcounts: z
+        .array(z.string())
+        .describe(
+          'Employer size buckets. Allowed ONLY: "1-10","11-50","51-200","201-500","501-1000","1001-5000","5001-10000","10 000+" (note the space in "10 000+").',
+        )
+        .optional(),
+      company_types: z
+        .array(z.string())
+        .describe(
+          'Employer types: "Public Company","Educational","Self Employed","Government Agency","Non Profit","Self Owned","Privately Held","Partnership".',
+        )
+        .optional(),
+      company_locations: z
+        .array(z.string())
+        .describe('Filter by the employer HQ location (country/region names).')
+        .optional(),
+      company_id: z
+        .string()
+        .describe(
+          'Anchor to a specific LinkedIn company id (returns its employees; this branch is less deterministic and does not enforce lead_industries).',
+        )
+        .optional(),
+      company_link: z.string().describe('Anchor to a specific LinkedIn company URL.').optional(),
+      company_name: z.string().describe('Anchor to a specific company by name.').optional(),
+      changed_jobs: z.boolean().describe('Only leads who recently changed jobs.').optional(),
+      posted_on_linkedin: z.boolean().describe('Only leads who recently posted on LinkedIn.').optional(),
+      exclude_ids: z
+        .array(z.union([z.string(), z.number()]))
+        .describe(
+          'sales_ids to exclude — pass the ids of leads already returned in prior calls to paginate/deduplicate.',
+        )
+        .optional(),
+      exclude_names: z.array(z.string()).describe('Full names to exclude from results.').optional(),
+      personas: z
+        .array(z.any())
+        .describe(
+          'Advanced: raw persona tuples [label,[titles],[secondary],[exclusions],seniority?]. Overrides job_title/job_titles.',
+        )
+        .optional(),
+      get_max_leads: z
+        .boolean()
+        .describe(
+          'Also report the total number of matching leads (results_count). The number of rows returned is still bounded by limit_by.',
+        )
+        .optional(),
+      limit_by: z
+        .number()
+        .describe(
+          `Total leads to return this call (1–${MAX_RESULT_LIMIT}, default ${DEFAULT_RESULT_LIMIT}). This is a TOTAL cap across all personas. For more, paginate with exclude_ids.`,
+        )
+        .optional(),
+      offset_by: z
+        .number()
+        .describe('Offset for pagination (note: ordering is not stable — exclude_ids is more reliable).')
+        .optional(),
       limit: z.number().describe('Alias for limit_by').optional(),
       offset: z.number().describe('Alias for offset_by').optional(),
-      without_company: z.boolean().describe('Search leads without filtering by companies').optional(),
-      compact: z.boolean().describe('Return compact summary instead of full JSON').optional(),
+      without_company: z
+        .boolean()
+        .describe(
+          'Search across all companies (filter-only). Auto-enabled when no company_id/link/name is given; this branch enforces all filters. Ignored when a company anchor is set.',
+        )
+        .optional(),
+      compact: z
+        .boolean()
+        .describe(
+          'Default true: return a 9-field summary per lead (name/title/company/industry/location/linkedin_url). Set false for the full raw lead object (skills, experience, etc.). Neither mode includes email — use generate_email.',
+        )
+        .optional(),
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args, extra) => {
       try {
         const Authorization = await resolveAuthHeader(extra);
         const apiBody = toApiFilters(args);
-        if (args.job_title) {
-          apiBody.personas = [[args.job_title, [args.job_title.toLowerCase()], [], []]];
-        }
+        // Build personas from friendly inputs; strip the builder-only fields.
+        const personas = buildPersonas(args);
+        for (const f of LEAD_CONTROL_FIELDS) delete apiBody[f];
+        if (personas) apiBody.personas = personas;
+        // Steer to the deterministic, fully-filtered branch when no company is
+        // anchored (also avoids the API's hard 400 "company_* required"). Respect
+        // an explicit without_company.
+        const hasAnchor = !!(args.company_id || args.company_link || args.company_name);
+        if (!hasAnchor && args.without_company === undefined) apiBody.without_company = true;
+        // Never let a single call pull an unbounded number of billable rows.
+        clampLimit(apiBody);
+
         const data = await callApi(
           fetcher,
           `${apiBase}/api/linkedin/leads/by_icp/`,
@@ -299,12 +445,21 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           return {
             structuredContent: {
               amount: data.amount ?? leads.length ?? null,
+              results_count: data.results_count ?? undefined,
               leads: formated_leads,
             },
             content: [
               {
                 type: 'text',
-                text: JSON.stringify({ amount: data.amount ?? formated_leads.length, leads: formated_leads }, null, 2),
+                text: JSON.stringify(
+                  {
+                    amount: data.amount ?? formated_leads.length,
+                    results_count: data.results_count,
+                    leads: formated_leads,
+                  },
+                  null,
+                  2,
+                ),
               },
             ],
           } as any;
@@ -320,7 +475,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     server,
     'search_companies',
-    'Search for companies by ICP filters',
+    "Search for companies matching an Ideal Customer Profile. Send flat filters (this endpoint validates industry/type names and rejects unknown ones with HTTP 400). Note: the returned headcount_range label can lag a company's current size (it is snapshotted at index time); the filter itself is applied at query time.",
     {
       company_types: z
         .array(z.string())
@@ -328,51 +483,79 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           'Company types. Allowed values: "Public Company", "Educational", "Self Employed", "Government Agency", "Non Profit", "Self Owned", "Privately Held", "Partnership".',
         )
         .optional(),
-      get_max_companies: z.boolean().describe('Get maximum companies').optional(),
+      get_max_companies: z.boolean().describe('Also report the total number of matching companies.').optional(),
       headcounts: z
         .array(z.string())
         .describe(
-          'Employee headcount ranges. Allowed values ONLY: "1", "2-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10000+". Note the largest bucket is "10000+" (NOT "10001+").',
+          'Employee headcount buckets. Allowed ONLY: "1-10","11-50","51-200","201-500","501-1000","1001-5000","5001-10000","10 000+" (note the space in "10 000+").',
         )
         .optional(),
       industries: z
         .array(z.string())
         .describe(
-          'Industries. Must match Generect industry names exactly (e.g. "Software Development", "Financial Services"). Invalid names are rejected by the API.',
+          'Industries. Must match Generect industry names exactly (e.g. "Software Development", "Financial Services"). Names are hierarchical. Invalid names are rejected (HTTP 400).',
         )
         .optional(),
-      locations: z.array(z.string()).describe('Locations (countries, e.g. ["United States"])').optional(),
-      keywords: z.array(z.string()).describe('Keywords').optional(),
-      limit_by: z.number().describe('Number of results to return').optional(),
-      offset_by: z.number().describe('Offset for pagination').optional(),
+      exclude_industries: z
+        .array(z.string())
+        .describe('Industries to exclude (same taxonomy as industries).')
+        .optional(),
+      locations: z.array(z.string()).describe('Locations (countries/regions, e.g. ["United States"]).').optional(),
+      exclude_locations: z.array(z.string()).describe('Locations to exclude.').optional(),
+      revenues_range: z
+        .object({ min: z.number(), max: z.number() })
+        .describe('Annual revenue range in millions USD, e.g. {"min":0.5,"max":1001}. Single object, NOT an array.')
+        .optional(),
+      technologies: z.array(z.string()).describe('Technologies the company uses (BuiltWith taxonomy).').optional(),
+      num_of_followers: z.array(z.string()).describe('LinkedIn follower-count buckets.').optional(),
+      company_names: z.array(z.string()).describe('Restrict to specific company names.').optional(),
+      keywords: z.array(z.string()).describe('Free-text keywords (Boolean phrases allowed).').optional(),
+      limit_by: z
+        .number()
+        .describe(`Companies to return (1–${MAX_RESULT_LIMIT}, default ${DEFAULT_RESULT_LIMIT}).`)
+        .optional(),
+      offset_by: z.number().describe('Offset for pagination.').optional(),
       limit: z.number().describe('Alias for limit_by').optional(),
       offset: z.number().describe('Alias for offset_by').optional(),
-      compact: z.boolean().describe('Return compact summary instead of full JSON').optional(),
-      fallback_from_leads: z.boolean().describe('If no companies, derive from leads by keywords').optional(),
+      compact: z
+        .boolean()
+        .describe('Default true: 6-field summary per company. Set false for the full raw object.')
+        .optional(),
+      fallback_from_leads: z
+        .boolean()
+        .describe(
+          'Default FALSE. If true and the company search is empty, derive candidate company NAMES by aggregating a keyword lead search. These are lead-derived name counts (source:"leads_derived"), NOT real company records, and cost an extra query.',
+        )
+        .optional(),
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args, extra) => {
       try {
         const Authorization = await resolveAuthHeader(extra);
+        const companyBody = toApiFilters(args);
+        clampLimit(companyBody);
         let data = await callApi(
           fetcher,
           `${apiBase}/api/linkedin/companies/by_icp/`,
           {
             method: 'POST',
             headers: { Authorization, 'Content-Type': 'application/json' },
-            body: JSON.stringify(toApiFilters(args)),
+            body: JSON.stringify(companyBody),
           },
           Number(args?.timeout_ms ?? defaultTimeoutMs),
         );
         const companiesEmpty = !data || !Array.isArray(data.companies) || data.companies.length === 0;
+        // Opt-IN only: the fallback fabricates lead-derived name aggregates that are
+        // not real company records, and costs an extra billable query.
         const shouldFallback =
           companiesEmpty &&
           Array.isArray(args?.keywords) &&
           args.keywords.length > 0 &&
-          args?.fallback_from_leads !== false;
+          args?.fallback_from_leads === true;
         if (shouldFallback) {
           const leadsBody: Record<string, unknown> = {
             keywords: args.keywords,
+            without_company: true,
             limit_by: 100,
           };
           // Best-effort fallback: if the leads lookup itself fails, keep the
@@ -398,8 +581,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
             }
             const derived = Array.from(counts.entries())
               .sort((a, b) => b[1] - a[1])
-              .map(([name, count]) => ({ name, occurrences_in_leads: count }));
-            data = { amount: derived.length, companies: derived };
+              .map(([name, count]) => ({ name, occurrences_in_leads: count, source: 'leads_derived' }));
+            data = { amount: derived.length, companies: derived, source: 'leads_derived' };
           } catch {}
         }
         const compact = args?.compact !== false;
@@ -436,28 +619,57 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     server,
     'generate_email',
-    'Generate email by first/last name and domain via Generect Email Generator',
+    'Find & verify work email(s) from name + company domain. Provide a single person (first_name/last_name/domain) OR a batch via candidates (resolved in one call).',
     {
-      first_name: z.string().describe('First name of the person'),
-      last_name: z.string().describe('Last name of the person'),
-      domain: z.string().describe('Company domain without protocol (e.g., generect.com)'),
+      first_name: z.string().describe('First name (single-person mode).').optional(),
+      last_name: z.string().describe('Last name (single-person mode).').optional(),
+      middle_name: z.string().describe('Middle name (optional).').optional(),
+      domain: z
+        .string()
+        .describe('Company domain without protocol, e.g. "generect.com" (required in single-person mode).')
+        .optional(),
+      candidates: z
+        .array(
+          z.object({
+            first_name: z.string(),
+            last_name: z.string(),
+            middle_name: z.string().optional(),
+            domain: z.string(),
+          }),
+        )
+        .describe(
+          'Batch mode: resolve many people in one call. Each needs first_name, last_name, domain (middle_name optional).',
+        )
+        .optional(),
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args, extra) => {
       try {
         const Authorization = await resolveAuthHeader(extra);
-        const candidate = {
-          first_name: args.first_name,
-          last_name: args.last_name,
-          domain: args.domain,
-        };
+        let candidates: any[];
+        if (Array.isArray(args.candidates) && args.candidates.length > 0) {
+          candidates = args.candidates;
+        } else if (args.first_name && args.last_name && args.domain) {
+          candidates = [
+            {
+              first_name: args.first_name,
+              last_name: args.last_name,
+              ...(args.middle_name ? { middle_name: args.middle_name } : {}),
+              domain: args.domain,
+            },
+          ];
+        } else {
+          throw Object.assign(new Error('Provide either candidates[] or first_name + last_name + domain'), {
+            status: 400,
+          });
+        }
         const data = await callApi(
           fetcher,
           `${apiBase}/api/linkedin/email_finder/`,
           {
             method: 'POST',
             headers: { Authorization, 'Content-Type': 'application/json' },
-            body: JSON.stringify([candidate]),
+            body: JSON.stringify(candidates),
           },
           Number(args?.timeout_ms ?? defaultTimeoutMs),
         );
@@ -512,13 +724,32 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     server,
     'health',
-    'Health check Generect API via a quick lead-by-link request',
+    'Liveness check. By default (cheap, no credits) it confirms the MCP server is up and an API credential is present. Pass deep:true to additionally probe the Generect API with a real lead-by-link request (consumes a credit and verifies the token end-to-end).',
     {
-      url: z.string().describe('LinkedIn profile URL to validate (defaults to a public profile)').optional(),
+      deep: z.boolean().describe('Run a live API probe (lead-by-link). Consumes a credit. Default false.').optional(),
+      url: z.string().describe('LinkedIn profile URL for the deep probe (defaults to a public profile).').optional(),
       timeout_ms: z.number().describe('Request timeout in milliseconds').optional(),
     },
     async (args, extra) => {
       const started = Date.now();
+      // Cheap path: never spend a credit just to answer "are you alive?".
+      if (!args?.deep) {
+        let hasCredential = false;
+        try {
+          await resolveAuthHeader(extra);
+          hasCredential = true;
+        } catch {
+          hasCredential = false;
+        }
+        return jsonTextContent({
+          ok: true,
+          server: 'up',
+          version: VERSION,
+          has_credential: hasCredential,
+          ms: Date.now() - started,
+          note: 'Pass deep:true to probe the Generect API end-to-end (consumes a credit).',
+        });
+      }
       const testUrl =
         typeof args?.url === 'string' && args.url.trim() ? args.url : 'https://www.linkedin.com/in/satyanadella/';
       try {
@@ -541,6 +772,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const ok = !!data?.lead?.linkedin_url;
         const payload = {
           ok,
+          deep: true,
           status: res.status,
           ms: Date.now() - started,
           sample: data?.lead?.linkedin_url ?? null,
@@ -549,6 +781,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       } catch (err: unknown) {
         return jsonTextContent({
           ok: false,
+          deep: true,
           error: String(err),
           ms: Date.now() - started,
         });
