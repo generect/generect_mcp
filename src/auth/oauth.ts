@@ -9,9 +9,23 @@ import {
   createAuthCode,
   consumeAuthCode,
   generateUserId,
+  createRefreshToken,
+  getRefreshToken,
+  revokeRefreshToken,
   OAuthClient,
 } from './storage.js';
-import { generateAccessToken } from './jwt.js';
+import { generateAccessToken, ACCESS_TOKEN_TTL_SECONDS } from './jwt.js';
+import { safeFetchJson } from './ssrf.js';
+import { rateLimitAllow } from './ratelimit.js';
+
+// Client-ID-Metadata-Document support (client_id is an https URL). Kept enabled
+// by default for compatibility with clients that use it, but the fetch is now
+// SSRF-guarded (see safeFetchJson). Set MCP_ENABLE_CIMD=false to disable entirely.
+const CIMD_ENABLED = process.env.MCP_ENABLE_CIMD !== 'false';
+// Unauthenticated DCR rate limit (registrations per IP per window). This is
+// defense-in-depth; the hard memory bound is the client-map cap in storage.ts.
+const REGISTER_MAX = Number(process.env.MCP_REGISTER_RATE_MAX || '60');
+const REGISTER_WINDOW_MS = Number(process.env.MCP_REGISTER_RATE_WINDOW_MS || String(60 * 60 * 1000));
 
 interface ClientMetadataDocument {
   client_name?: string;
@@ -24,27 +38,27 @@ interface ClientMetadataDocument {
 
 async function fetchClientMetadata(metadataUrl: string): Promise<ClientMetadataDocument | null> {
   try {
-    const res = await fetch(metadataUrl, {
-      headers: {
-        Accept: 'application/json',
-      },
-    });
+    // SSRF-guarded fetch: https only, DNS answers must all be public, no redirect
+    // following, hard timeout, and a size cap. This closes the unauthenticated
+    // internal-fetch / port-scan / metadata-endpoint vector.
+    const metadata = (await safeFetchJson(metadataUrl, {
+      timeoutMs: 5000,
+      maxBytes: 256 * 1024,
+    })) as ClientMetadataDocument;
 
-    if (!res.ok) {
-      console.error(`[oauth] Failed to fetch client metadata from ${metadataUrl}: ${res.status}`);
-      return null;
-    }
-
-    const metadata = (await res.json()) as ClientMetadataDocument;
-
-    if (!metadata.redirect_uris || !Array.isArray(metadata.redirect_uris) || metadata.redirect_uris.length === 0) {
+    if (
+      !metadata ||
+      !metadata.redirect_uris ||
+      !Array.isArray(metadata.redirect_uris) ||
+      metadata.redirect_uris.length === 0
+    ) {
       console.error(`[oauth] Client metadata missing redirect_uris`);
       return null;
     }
 
     return metadata;
   } catch (error) {
-    console.error(`[oauth] Error fetching client metadata:`, error);
+    console.error(`[oauth] Rejected client metadata fetch:`, error instanceof Error ? error.message : error);
     return null;
   }
 }
@@ -71,7 +85,10 @@ async function validateApiToken(token: string): Promise<{ valid: boolean; error?
       return { valid: true };
     }
 
-    return { valid: true };
+    // Fail CLOSED: any other status (5xx, 429, 502, …) means we could NOT confirm
+    // the token. Do not mint a long-lived access token around an unverified
+    // credential — ask the user to retry instead.
+    return { valid: false, error: 'Could not verify the API token right now (upstream error). Please try again.' };
   } catch (error) {
     return { valid: false, error: 'Failed to validate token. Please try again.' };
   }
@@ -83,7 +100,7 @@ async function resolveClient(clientId: string): Promise<OAuthClient | null> {
     return client;
   }
 
-  if (clientId.startsWith('https://') || clientId.startsWith('http://')) {
+  if (CIMD_ENABLED && (clientId.startsWith('https://') || clientId.startsWith('http://'))) {
     client = getClientByMetadataUrl(clientId);
     if (client) {
       return client;
@@ -137,6 +154,7 @@ oauthRouter.get('/authorize', handleAuthorizeGet);
 oauthRouter.post('/authorize', handleAuthorizePost);
 oauthRouter.post('/token', handleToken);
 oauthRouter.post('/register', handleRegister);
+oauthRouter.post('/revoke', handleRevoke);
 
 async function handleAuthorizeGet(req: Request, res: Response) {
   const clientId = req.query.client_id as string;
@@ -165,39 +183,33 @@ async function handleAuthorizeGet(req: Request, res: Response) {
   }
 
   if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
-    res
-      .status(400)
-      .send(
-        renderErrorPage({
-          error: 'invalid_request',
-          errorDescription: 'Only S256 code_challenge_method is supported',
-        }),
-      );
+    res.status(400).send(
+      renderErrorPage({
+        error: 'invalid_request',
+        errorDescription: 'Only S256 code_challenge_method is supported',
+      }),
+    );
     return;
   }
 
   if (responseType && responseType !== 'code') {
-    res
-      .status(400)
-      .send(
-        renderErrorPage({
-          error: 'unsupported_response_type',
-          errorDescription: 'Only "code" response type is supported',
-        }),
-      );
+    res.status(400).send(
+      renderErrorPage({
+        error: 'unsupported_response_type',
+        errorDescription: 'Only "code" response type is supported',
+      }),
+    );
     return;
   }
 
   const client = await resolveClient(clientId);
   if (!client) {
-    res
-      .status(400)
-      .send(
-        renderErrorPage({
-          error: 'invalid_client',
-          errorDescription: 'Unknown client_id. Please register your client first.',
-        }),
-      );
+    res.status(400).send(
+      renderErrorPage({
+        error: 'invalid_client',
+        errorDescription: 'Unknown client_id. Please register your client first.',
+      }),
+    );
     return;
   }
 
@@ -313,10 +325,15 @@ async function handleToken(req: Request, res: Response) {
   res.set('Cache-Control', 'no-store');
   res.set('Pragma', 'no-cache');
 
+  if (grantType === 'refresh_token') {
+    await handleRefreshGrant(req, res);
+    return;
+  }
+
   if (grantType !== 'authorization_code') {
     res.status(400).json({
       error: 'unsupported_grant_type',
-      error_description: 'Only authorization_code grant type is supported',
+      error_description: 'Supported grant types: authorization_code, refresh_token',
     });
     return;
   }
@@ -389,10 +406,18 @@ async function handleToken(req: Request, res: Response) {
 
   try {
     const accessToken = await generateAccessToken(authCode.apiToken, authCode.userId, clientId);
+    const refreshToken = createRefreshToken({
+      clientId,
+      userId: authCode.userId,
+      apiToken: authCode.apiToken,
+      scope: authCode.scope,
+    });
 
     res.json({
       access_token: accessToken,
       token_type: 'Bearer',
+      expires_in: ACCESS_TOKEN_TTL_SECONDS,
+      refresh_token: refreshToken,
       scope: authCode.scope,
     });
   } catch (error) {
@@ -404,7 +429,75 @@ async function handleToken(req: Request, res: Response) {
   }
 }
 
+// refresh_token grant: exchange a valid, unrevoked refresh token for a new access
+// token. Rotates the refresh token (one-time use) to limit replay of a leaked one.
+async function handleRefreshGrant(req: Request, res: Response) {
+  const refreshToken = req.body.refresh_token as string;
+  const clientId = req.body.client_id as string;
+
+  if (!refreshToken) {
+    res.status(400).json({ error: 'invalid_request', error_description: 'refresh_token is required' });
+    return;
+  }
+
+  const stored = getRefreshToken(refreshToken);
+  if (!stored) {
+    res.status(400).json({ error: 'invalid_grant', error_description: 'Invalid, expired, or revoked refresh token' });
+    return;
+  }
+
+  if (clientId && stored.clientId !== clientId) {
+    res
+      .status(400)
+      .json({ error: 'invalid_grant', error_description: 'Refresh token was issued to a different client' });
+    return;
+  }
+
+  try {
+    const accessToken = await generateAccessToken(stored.apiToken, stored.userId, stored.clientId);
+    // Rotate: invalidate the used refresh token and issue a fresh one.
+    revokeRefreshToken(refreshToken);
+    const newRefresh = createRefreshToken({
+      clientId: stored.clientId,
+      userId: stored.userId,
+      apiToken: stored.apiToken,
+      scope: stored.scope,
+    });
+    res.json({
+      access_token: accessToken,
+      token_type: 'Bearer',
+      expires_in: ACCESS_TOKEN_TTL_SECONDS,
+      refresh_token: newRefresh,
+      scope: stored.scope,
+    });
+  } catch (error) {
+    console.error('[oauth] Refresh grant error:', error);
+    res.status(500).json({ error: 'server_error', error_description: 'Failed to refresh access token' });
+  }
+}
+
+// RFC 7009 token revocation. Accepts a refresh_token; always returns 200 (per
+// spec, revocation of an unknown token is not an error).
+async function handleRevoke(req: Request, res: Response) {
+  res.set('Cache-Control', 'no-store');
+  const token = req.body.token as string;
+  if (token) revokeRefreshToken(token);
+  res.status(200).json({});
+}
+
 async function handleRegister(req: Request, res: Response) {
+  // Bound unauthenticated DCR: an anonymous caller must not be able to register
+  // clients in a loop. Keyed on client IP (trusts the reverse proxy's X-Forwarded-For
+  // only if express `trust proxy` is set; falls back to socket address).
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  if (!rateLimitAllow(`register:${ip}`, REGISTER_MAX, REGISTER_WINDOW_MS)) {
+    res.status(429).json({
+      error: 'temporarily_unavailable',
+      error_description: 'Too many client registrations from this address. Please retry later.',
+    });
+    return;
+  }
+
   const clientName = req.body.client_name as string | undefined;
   const redirectUris = req.body.redirect_uris as string[] | string;
   const logoUri = req.body.logo_uri as string | undefined;
@@ -485,7 +578,7 @@ function isAllowedRedirectHostname(hostname: string): boolean {
   // Extra domains configured at deploy time
   const extra = (process.env.MCP_ALLOWED_REDIRECT_DOMAINS ?? '')
     .split(',')
-    .map((d) => d.trim().toLowerCase())
+    .map(d => d.trim().toLowerCase())
     .filter(Boolean);
   return extra.includes(hostname.toLowerCase());
 }

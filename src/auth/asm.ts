@@ -6,6 +6,7 @@ export interface AuthorizationServerMetadata {
   authorization_endpoint: string;
   token_endpoint: string;
   registration_endpoint: string;
+  revocation_endpoint: string;
   jwks_uri: string;
   response_types_supported: string[];
   grant_types_supported: string[];
@@ -14,26 +15,28 @@ export interface AuthorizationServerMetadata {
   token_endpoint_auth_methods_supported: string[];
   client_id_metadata_document_supported: boolean;
   subject_types_supported?: string[];
-  id_token_signing_alg_values_supported?: string[];
 }
 
 export function getAuthorizationServerMetadata(): AuthorizationServerMetadata {
   const baseUrl = getOAuthBaseUrl();
 
+  // Advertise only what is actually implemented and honored. Previously this
+  // announced `openid` scope and `id_token` signing algs that are never issued,
+  // which invites clients to attempt an OIDC flow this server does not support.
   return {
     issuer: baseUrl,
     authorization_endpoint: `${baseUrl}/oauth/authorize`,
     token_endpoint: `${baseUrl}/oauth/token`,
     registration_endpoint: `${baseUrl}/oauth/register`,
+    revocation_endpoint: `${baseUrl}/oauth/revoke`,
     jwks_uri: `${baseUrl}/.well-known/jwks.json`,
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
-    scopes_supported: ['generect:api', 'openid'],
+    scopes_supported: ['generect:api'],
     token_endpoint_auth_methods_supported: ['none', 'client_secret_post'],
-    client_id_metadata_document_supported: true,
+    client_id_metadata_document_supported: process.env.MCP_ENABLE_CIMD !== 'false',
     subject_types_supported: ['public'],
-    id_token_signing_alg_values_supported: ['RS256', 'HS256'],
   };
 }
 

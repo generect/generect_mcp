@@ -274,7 +274,22 @@ npm run mcp:client -- <api-key>
 - **OAuth tokens** are JWTs signed by the server and contain your encrypted API token
 - **Token encryption** uses AES-256-GCM with a key from `TOKEN_ENCRYPTION_KEY` (or derived from `JWT_SIGNING_KEY`)
 - **Fail-closed secrets** — in production the server refuses to start with a missing or well-known-default `JWT_SIGNING_KEY`, and never publishes symmetric key material in the JWKS
+- **Bounded, refreshable tokens** — access tokens expire (default 30 days, `ACCESS_TOKEN_TTL_SECONDS`) and are renewed via a `refresh_token` grant; refresh tokens are rotated on use and revocable at `POST /oauth/revoke` (RFC 7009). Tokens issued before this change remain valid (no forced re-auth)
 - **PKCE** is required for all authorization code flows (S256 method)
-- **Dynamic Client Registration** allows any MCP client to self-register
-- **Audience validation** ensures tokens are only used with this MCP server
+- **Dynamic Client Registration** allows any MCP client to self-register, but is now **rate-limited per IP** (`MCP_REGISTER_RATE_MAX`, default 60/hour) and the client store is **capped** (`MCP_MAX_CLIENTS`, default 5000, LRU eviction that never drops an in-use client)
+- **SSRF-guarded metadata fetches** — the client-id-metadata-document flow (`MCP_ENABLE_CIMD`, default on) fetches only `https` URLs that resolve exclusively to public IPs, with no redirect following, a hard timeout, and a response-size cap (blocks loopback / RFC1918 / link-local / cloud-metadata targets)
+- **Token validation fails closed** — if Generect cannot confirm a token during login (upstream error), the server declines to mint an access token instead of assuming validity
+- **Audience + algorithm pinning** ensures tokens are only used with this MCP server and only via the expected signing algorithm
+
+#### Configuration (security-relevant env vars)
+
+| Var | Default | Effect |
+|-----|---------|--------|
+| `ACCESS_TOKEN_TTL_SECONDS` | `2592000` (30d) | Access-token lifetime |
+| `REFRESH_TOKEN_TTL_SECONDS` | `7776000` (90d) | Refresh-token lifetime |
+| `MCP_MAX_CLIENTS` | `5000` | Cap on the in-memory DCR client store |
+| `MCP_REGISTER_RATE_MAX` | `60` | Max `/oauth/register` calls per IP per window |
+| `MCP_REGISTER_RATE_WINDOW_MS` | `3600000` (1h) | Rate-limit window |
+| `MCP_ENABLE_CIMD` | `true` | Allow client-id-as-metadata-URL (SSRF-guarded) |
+| `MCP_ALLOWED_REDIRECT_DOMAINS` | — | Extra allowed redirect hostnames (comma-separated) |
 - **Log privacy** — prospect payloads are redacted from logs by default (`MCP_LOG_PAYLOADS=1` to opt in)

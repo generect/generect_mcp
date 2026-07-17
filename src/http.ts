@@ -36,6 +36,10 @@ const isAllowedOrigin = (origin: string): boolean => {
 };
 
 const app = express();
+// Trust the loopback reverse proxy (nginx) so req.ip reflects the real client
+// address from X-Forwarded-For for per-IP rate limiting. Only loopback is
+// trusted, so a direct client cannot spoof XFF.
+app.set('trust proxy', 'loopback');
 app.use(express.json());
 app.use(
   cors({

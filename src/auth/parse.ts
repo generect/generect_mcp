@@ -5,7 +5,7 @@ const KEYWORDS = new Set(['bearer', 'token']);
 function looksLikeJwt(value: string): boolean {
   const parts = value.split('.');
   if (parts.length !== 3) return false;
-  return parts.every((segment) => segment.length > 0 && /^[A-Za-z0-9_-]+$/.test(segment));
+  return parts.every(segment => segment.length > 0 && /^[A-Za-z0-9_-]+$/.test(segment));
 }
 
 function classify(value: string): ParsedAuth {
