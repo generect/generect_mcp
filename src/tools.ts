@@ -155,7 +155,14 @@ async function fetchWithTimeout(fetcher: Fetcher, url: string, init: RequestInit
     if (!res.ok) {
       try {
         const t = await res.clone().text();
-        errorBody = t.length > 2000 ? `${t.slice(0, 2000)}…(${t.length} chars)` : t;
+        // The upstream error body can echo request context / other data. Log it
+        // verbatim only when payload logging is explicitly enabled; otherwise
+        // record just its size so we still know an error body was present.
+        errorBody = isPayloadLoggingEnabled()
+          ? t.length > 2000
+            ? `${t.slice(0, 2000)}…(${t.length} chars)`
+            : t
+          : `<errorBody:${t.length}>`;
       } catch {}
     }
     logEvent('api_response', {

@@ -8,6 +8,7 @@ import {
   KeyObject,
   JWK,
 } from 'jose';
+import { randomUUID } from 'node:crypto';
 import { encryptApiToken, decryptApiToken } from './crypto.js';
 import { isProduction, isInsecureSecret } from './secrets.js';
 
@@ -98,6 +99,11 @@ export function getKeyId(): string {
   return keyId;
 }
 
+// Bounded access-token lifetime. A leaked bearer that wraps the user's real API
+// token must not be valid forever. Default 30 days; a refresh token (issued
+// alongside) lets clients renew without re-authenticating. Configurable.
+export const ACCESS_TOKEN_TTL_SECONDS = Number(process.env.ACCESS_TOKEN_TTL_SECONDS || String(30 * 24 * 60 * 60));
+
 export async function generateAccessToken(apiToken: string, userId: string, clientId?: string): Promise<string> {
   const key = await getSigningKey();
   const encryptedToken = encryptApiToken(apiToken);
@@ -111,6 +117,8 @@ export async function generateAccessToken(apiToken: string, userId: string, clie
   })
     .setProtectedHeader({ alg: publicKeyJwk.alg || 'HS256', kid: keyId || undefined })
     .setIssuedAt(now)
+    .setExpirationTime(now + ACCESS_TOKEN_TTL_SECONDS)
+    .setJti(randomUUID())
     .setIssuer(getIssuer())
     .setAudience(getMcpEndpointUrl())
     .sign(key);
@@ -121,9 +129,16 @@ export async function generateAccessToken(apiToken: string, userId: string, clie
 export async function verifyAccessToken(token: string): Promise<GenerectJwtPayload | null> {
   try {
     const key = await getVerificationKey();
+    // Pin the algorithm to the one our key actually uses. Without this, jose
+    // infers permitted algorithms from the key type; pinning is defense-in-depth
+    // against algorithm-confusion if the key material ever changes. jose enforces
+    // `exp` when present and, for backward compatibility, does not reject the
+    // legacy tokens that were issued before we set an expiry.
+    const alg = (publicKeyJwk && publicKeyJwk.alg) || 'HS256';
     const { payload } = await jwtVerify<GenerectJwtPayload>(token, key, {
       issuer: getIssuer(),
       audience: getMcpEndpointUrl(),
+      algorithms: [alg],
     });
 
     return payload;

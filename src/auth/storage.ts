@@ -29,8 +29,24 @@ export interface PKCEChallenge {
   method: 'S256' | 'plain';
 }
 
+export interface RefreshToken {
+  token: string;
+  clientId: string;
+  userId: string;
+  apiToken: string; // normalized "Token <x>" — the credential the access token proxies
+  scope: string;
+  expiresAt: number;
+  revoked: boolean;
+}
+
 const clients = new Map<string, OAuthClient>();
 const authCodes = new Map<string, AuthCode>();
+const refreshTokens = new Map<string, RefreshToken>();
+
+// Hard cap so unauthenticated Dynamic Client Registration cannot grow the client
+// map without bound. Configurable for large deployments.
+const MAX_CLIENTS = Number(process.env.MCP_MAX_CLIENTS || '5000');
+const REFRESH_TOKEN_TTL_MS = Number(process.env.REFRESH_TOKEN_TTL_SECONDS || String(90 * 24 * 60 * 60)) * 1000;
 
 export function generateClientId(): string {
   return randomUUID();
@@ -59,7 +75,33 @@ export function registerClient(data: {
   };
 
   clients.set(clientId, client);
+  enforceClientCap();
   return client;
+}
+
+// Bound the client map. Evict the oldest clients first, but never a client that
+// is referenced by a still-valid authorization code or refresh token (evicting
+// one mid-flow would 400 an in-progress login). If nothing is safely evictable
+// we still drop the single oldest to guarantee the cap holds.
+function enforceClientCap(): void {
+  if (clients.size <= MAX_CLIENTS) return;
+  const now = Date.now();
+  const inUse = new Set<string>();
+  for (const c of authCodes.values()) if (c.expiresAt > now) inUse.add(c.clientId);
+  for (const r of refreshTokens.values()) if (!r.revoked && r.expiresAt > now) inUse.add(r.clientId);
+
+  const byAge = [...clients.values()].sort((a, b) => a.createdAt - b.createdAt);
+  for (const c of byAge) {
+    if (clients.size <= MAX_CLIENTS) break;
+    if (!inUse.has(c.clientId)) clients.delete(c.clientId);
+  }
+  // Backstop: if every remaining client is in use, evict the absolute oldest so
+  // the cap is never exceeded unboundedly.
+  while (clients.size > MAX_CLIENTS) {
+    const oldest = [...clients.values()].sort((a, b) => a.createdAt - b.createdAt)[0];
+    if (!oldest) break;
+    clients.delete(oldest.clientId);
+  }
 }
 
 export function getClient(clientId: string): OAuthClient | undefined {
@@ -147,6 +189,58 @@ export function cleanupExpiredCodes(): void {
       authCodes.delete(code);
     }
   }
+  for (const [token, rt] of refreshTokens) {
+    if (rt.revoked || rt.expiresAt < now) {
+      refreshTokens.delete(token);
+    }
+  }
 }
 
-setInterval(cleanupExpiredCodes, 60 * 1000);
+// --- Refresh tokens (enable bounded-lifetime access tokens + revocation) ---
+
+export function createRefreshToken(data: {
+  clientId: string;
+  userId: string;
+  apiToken: string;
+  scope?: string;
+}): string {
+  const token = randomBytes(32).toString('base64url');
+  refreshTokens.set(token, {
+    token,
+    clientId: data.clientId,
+    userId: data.userId,
+    apiToken: data.apiToken,
+    scope: data.scope || 'generect:api',
+    expiresAt: Date.now() + REFRESH_TOKEN_TTL_MS,
+    revoked: false,
+  });
+  return token;
+}
+
+// Look up a refresh token without consuming it. Returns null if unknown, revoked,
+// or expired.
+export function getRefreshToken(token: string): RefreshToken | null {
+  const rt = refreshTokens.get(token);
+  if (!rt) return null;
+  if (rt.revoked || rt.expiresAt < Date.now()) return null;
+  return rt;
+}
+
+// Revoke a refresh token (RFC 7009). Idempotent; returns true if a live token was
+// found and revoked.
+export function revokeRefreshToken(token: string): boolean {
+  const rt = refreshTokens.get(token);
+  if (!rt) return false;
+  const wasLive = !rt.revoked;
+  rt.revoked = true;
+  refreshTokens.delete(token);
+  return wasLive;
+}
+
+export function cleanupExpired(): void {
+  cleanupExpiredCodes();
+}
+
+// unref() so this housekeeping timer never keeps the process alive on its own
+// (matters for clean shutdown and for test runners that import this module).
+setInterval(cleanupExpiredCodes, 60 * 1000).unref();
