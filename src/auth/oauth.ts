@@ -519,7 +519,7 @@ async function handleRegister(req: Request, res: Response) {
     if (!isValidRedirectUri(uri)) {
       res.status(400).json({
         error: 'invalid_redirect_uri',
-        error_description: `Invalid redirect URI: ${uri}. Must be localhost or an allowed domain (*.generect.com, claude.ai, or MCP_ALLOWED_REDIRECT_DOMAINS).`,
+        error_description: `Invalid redirect URI: ${uri}. Must be localhost or an allowed domain (*.generect.com, claude.ai, linear.app, or MCP_ALLOWED_REDIRECT_DOMAINS).`,
       });
       return;
     }
@@ -559,31 +559,40 @@ async function handleRegister(req: Request, res: Response) {
 
 /**
  * Returns true if the hostname is on the redirect URI allowlist.
- * Allowlist: localhost/private IPs, *.generect.com, claude.ai, and any
- * extra comma-separated hostnames in MCP_ALLOWED_REDIRECT_DOMAINS.
+ * Allowlist: localhost/private IPs, *.generect.com, first-party MCP client hosts
+ * (claude.ai, linear.app), and any extra comma-separated hostnames in
+ * MCP_ALLOWED_REDIRECT_DOMAINS.
  */
 function isAllowedRedirectHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+
   // localhost / private networks
-  if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
-  if (/^192\.168\./.test(hostname)) return true;
-  if (/^10\./.test(hostname)) return true;
-  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname)) return true;
+  if (host === 'localhost' || host === '127.0.0.1') return true;
+  if (/^192\.168\./.test(host)) return true;
+  if (/^10\./.test(host)) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return true;
 
   // Generect product domains
-  if (/^([a-z0-9-]+\.)*generect\.com$/i.test(hostname)) return true;
+  if (/^([a-z0-9-]+\.)*generect\.com$/i.test(host)) return true;
 
-  // Claude.ai — primary MCP client
-  if (hostname === 'claude.ai') return true;
+  // First-party MCP clients that complete the OAuth flow in their own product.
+  // Their redirect targets are fixed, published callback URLs:
+  //   claude.ai   -> https://claude.ai/api/mcp/auth_callback
+  //   linear.app  -> https://linear.app/connect/mcp/callback
+  if (host === 'claude.ai' || host === 'www.claude.ai') return true;
+  if (host === 'linear.app' || host === 'www.linear.app') return true;
 
   // Extra domains configured at deploy time
   const extra = (process.env.MCP_ALLOWED_REDIRECT_DOMAINS ?? '')
     .split(',')
     .map(d => d.trim().toLowerCase())
     .filter(Boolean);
-  return extra.includes(hostname.toLowerCase());
+  return extra.includes(host);
 }
 
-function isValidRedirectUri(uri: string): boolean {
+// Exported for tests: the allowlist is security-critical, so it is asserted
+// directly rather than only through the HTTP handlers.
+export function isValidRedirectUri(uri: string): boolean {
   try {
     const url = new URL(uri);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
