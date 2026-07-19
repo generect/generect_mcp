@@ -47,3 +47,16 @@ test('MCP_ALLOWED_REDIRECT_DOMAINS extends the allowlist at runtime', () => {
     else process.env.MCP_ALLOWED_REDIRECT_DOMAINS = prev;
   }
 });
+
+test('MCP_ALLOW_ANY_HTTPS_REDIRECT opens https callbacks but never plain http', () => {
+  const prev = process.env.MCP_ALLOW_ANY_HTTPS_REDIRECT;
+  process.env.MCP_ALLOW_ANY_HTTPS_REDIRECT = 'true';
+  try {
+    assert.equal(isValidRedirectUri('https://any-new-app.example/cb'), true, 'any https allowed when opted in');
+    assert.equal(isValidRedirectUri('http://any-new-app.example/cb'), false, 'plain http still refused');
+    assert.equal(isValidRedirectUri('http://localhost:9999/cb'), true, 'localhost http still fine');
+  } finally {
+    if (prev === undefined) delete process.env.MCP_ALLOW_ANY_HTTPS_REDIRECT;
+    else process.env.MCP_ALLOW_ANY_HTTPS_REDIRECT = prev;
+  }
+});

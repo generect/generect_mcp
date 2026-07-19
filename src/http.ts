@@ -48,6 +48,44 @@ const app = express();
 // address from X-Forwarded-For for per-IP rate limiting. Only loopback is
 // trusted, so a direct client cannot spoof XFF.
 app.set('trust proxy', 'loopback');
+
+// Structured access logging for every request. nginx logs the transport view;
+// this logs the application view (including the OAuth client_id and the MCP
+// session), which is what you actually need to debug a failed integration.
+// Never logs credentials: the Authorization header and any token/secret query
+// parameters are omitted.
+const LOG_REQUESTS = process.env.MCP_LOG_REQUESTS !== '0' && process.env.MCP_LOG !== '0';
+app.use((req: Request, res: Response, next) => {
+  if (!LOG_REQUESTS) return next();
+  const started = Date.now();
+  res.on('finish', () => {
+    try {
+      const q = req.query as Record<string, unknown>;
+      console.error(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          event: 'http_request',
+          method: req.method,
+          path: (req.originalUrl || req.url).split('?')[0],
+          status: res.statusCode,
+          ms: Date.now() - started,
+          ip: req.ip ?? null,
+          origin: (req.headers.origin as string) ?? null,
+          ua: (req.headers['user-agent'] as string) ?? null,
+          // OAuth/MCP correlation handles — identifiers, never secrets.
+          client_id: typeof q.client_id === 'string' ? q.client_id : undefined,
+          redirect_uri: typeof q.redirect_uri === 'string' ? q.redirect_uri : undefined,
+          session: (req.headers['mcp-session-id'] as string) ?? undefined,
+          authenticated: req.headers.authorization ? true : false,
+        }),
+      );
+    } catch {
+      /* logging must never break a request */
+    }
+  });
+  next();
+});
+
 app.use(express.json());
 app.use(
   cors({

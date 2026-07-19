@@ -94,7 +94,20 @@ async function validateApiToken(token: string): Promise<{ valid: boolean; error?
   }
 }
 
+// Why a client could not be resolved — surfaced to the operator in logs and to
+// the user in the error page. "Unknown client_id" on its own is misleading: the
+// usual cause is that we REFUSED the client (disallowed redirect), not that it
+// never tried to register.
+let lastResolveFailure: string | null = null;
+
+export function takeLastResolveFailure(): string | null {
+  const r = lastResolveFailure;
+  lastResolveFailure = null;
+  return r;
+}
+
 async function resolveClient(clientId: string): Promise<OAuthClient | null> {
+  lastResolveFailure = null;
   let client = await getClient(clientId);
   if (client) {
     return client;
@@ -108,6 +121,7 @@ async function resolveClient(clientId: string): Promise<OAuthClient | null> {
 
     const metadata = await fetchClientMetadata(clientId);
     if (!metadata) {
+      lastResolveFailure = `Could not fetch a valid client metadata document from ${clientId}`;
       return null;
     }
 
@@ -126,6 +140,9 @@ async function resolveClient(clientId: string): Promise<OAuthClient | null> {
     // Validate redirect URIs from metadata document against allowlist
     for (const uri of metadata.redirect_uris) {
       if (!isValidRedirectUri(uri)) {
+        lastResolveFailure =
+          `Client ${clientId} declares redirect_uri ${uri}, which is not on this server's allowlist. ` +
+          `Add its host to MCP_ALLOWED_REDIRECT_DOMAINS (or set MCP_ALLOW_ANY_HTTPS_REDIRECT=true).`;
         console.error(`[oauth] Rejected metadata client ${clientId}: disallowed redirect_uri ${uri}`);
         return null;
       }
@@ -204,10 +221,22 @@ async function handleAuthorizeGet(req: Request, res: Response) {
 
   const client = await resolveClient(clientId);
   if (!client) {
+    // Say WHY. "Unknown client_id" alone sent operators hunting for a
+    // registration problem when the real cause was that we refused the client.
+    const reason = takeLastResolveFailure();
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event: 'authorize_client_rejected',
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        reason: reason ?? 'client_id is not registered on this server',
+      }),
+    );
     res.status(400).send(
       renderErrorPage({
         error: 'invalid_client',
-        errorDescription: 'Unknown client_id. Please register your client first.',
+        errorDescription: reason ?? 'Unknown client_id. Please register your client first.',
       }),
     );
     return;
@@ -517,6 +546,19 @@ async function handleRegister(req: Request, res: Response) {
 
   for (const uri of normalizedRedirectUris) {
     if (!isValidRedirectUri(uri)) {
+      // Previously a silent 400: an integration attempt was refused with no trace
+      // of who tried or why.
+      console.error(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          event: 'register_rejected',
+          reason: 'disallowed_redirect_uri',
+          redirect_uri: uri,
+          client_name: clientName ?? null,
+          ip: req.ip ?? null,
+          ua: req.headers['user-agent'] ?? null,
+        }),
+      );
       res.status(400).json({
         error: 'invalid_redirect_uri',
         error_description: `Invalid redirect URI: ${uri}. Must be localhost or an allowed domain (*.generect.com, claude.ai, linear.app, or MCP_ALLOWED_REDIRECT_DOMAINS).`,
@@ -596,6 +638,10 @@ export function isValidRedirectUri(uri: string): boolean {
   try {
     const url = new URL(uri);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    // Opt-in open policy: accept any https callback (what a public MCP server
+    // that wants to work with *any* client needs). http stays restricted to
+    // localhost/private ranges regardless, so codes are never sent in clear.
+    if (url.protocol === 'https:' && process.env.MCP_ALLOW_ANY_HTTPS_REDIRECT === 'true') return true;
     if (url.protocol === 'http:' && !isAllowedRedirectHostname(url.hostname)) return false;
     if (url.protocol === 'https:' && !isAllowedRedirectHostname(url.hostname)) return false;
     return true;
