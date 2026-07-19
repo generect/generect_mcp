@@ -25,7 +25,15 @@ const allowedOrigins = process.env.MCP_ALLOWED_ORIGINS
   ? process.env.MCP_ALLOWED_ORIGINS.split(',')
       .map(origin => origin.trim())
       .filter(Boolean)
-  : ['https://beta.generect.com', 'https://generect.com', 'https://app.generect.com'];
+  : [
+      'https://beta.generect.com',
+      'https://generect.com',
+      'https://app.generect.com',
+      // First-party MCP clients whose web apps call the discovery endpoints
+      // from their own origin during connect.
+      'https://claude.ai',
+      'https://linear.app',
+    ];
 
 const isAllowedOrigin = (origin: string): boolean => {
   // Always allow localhost for local development.
@@ -47,7 +55,16 @@ app.use(
       // Allow non-browser clients (e.g. curl, MCP clients) that do not set Origin.
       if (!origin) return callback(null, true);
       if (isAllowedOrigin(origin)) return callback(null, true);
-      return callback(new Error('CORS origin is not allowed'));
+      // Log WHICH origin was refused — without this the error is undiagnosable
+      // (it previously surfaced as a bare stack trace with no origin).
+      console.error(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          event: 'cors_rejected',
+          origin,
+        }),
+      );
+      return callback(new Error(`CORS origin is not allowed: ${origin}`));
     },
     exposedHeaders: ['Mcp-Session-Id', 'WWW-Authenticate'],
   }),
