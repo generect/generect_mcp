@@ -1,4 +1,5 @@
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
+import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 
 export interface OAuthClient {
   clientId: string;
@@ -48,6 +49,53 @@ const refreshTokens = new Map<string, RefreshToken>();
 const MAX_CLIENTS = Number(process.env.MCP_MAX_CLIENTS || '5000');
 const REFRESH_TOKEN_TTL_MS = Number(process.env.REFRESH_TOKEN_TTL_SECONDS || String(90 * 24 * 60 * 60)) * 1000;
 
+// --- Client registry persistence -------------------------------------------
+// Registered clients used to live only in memory, so every restart/redeploy made
+// previously-registered clients unknown: an app that had connected fine would
+// suddenly get "Unknown client_id. Please register your client first." (observed
+// in production for a client that registered on 2026-07-12 and then failed
+// repeatedly on 2026-07-18 after a restart).
+//
+// Only CLIENT metadata is persisted — never auth codes or refresh tokens, which
+// carry the user's API credential. Those stay in memory by design.
+const CLIENT_STORE_PATH = process.env.MCP_CLIENT_STORE_PATH || '.oauth-clients.json';
+
+function loadClientsFromDisk(): void {
+  try {
+    const raw = readFileSync(CLIENT_STORE_PATH, 'utf8');
+    const parsed = JSON.parse(raw) as OAuthClient[];
+    if (!Array.isArray(parsed)) return;
+    for (const c of parsed) {
+      if (c && typeof c.clientId === 'string' && Array.isArray(c.redirectUris)) {
+        clients.set(c.clientId, c);
+      }
+    }
+    console.log(`[oauth] Restored ${clients.size} registered client(s) from ${CLIENT_STORE_PATH}`);
+  } catch (err: any) {
+    // ENOENT on first boot is normal; anything else is logged but never fatal.
+    if (err?.code !== 'ENOENT') {
+      console.error(`[oauth] Could not load client store (${CLIENT_STORE_PATH}):`, err?.message ?? err);
+    }
+  }
+}
+
+// Atomic synchronous write (temp + rename), so a crash mid-write cannot corrupt
+// the store and a shutdown immediately after a registration cannot lose it.
+// Registrations are rare (a handful per day) and the file is tiny, so writing
+// inline is simpler and strictly safer than a debounced/deferred flush — an
+// earlier debounced version silently lost writes when the process exited first.
+function schedulePersist(): void {
+  try {
+    const tmp = `${CLIENT_STORE_PATH}.tmp`;
+    writeFileSync(tmp, JSON.stringify([...clients.values()]), { mode: 0o600 });
+    renameSync(tmp, CLIENT_STORE_PATH);
+  } catch (err: any) {
+    console.error(`[oauth] Could not persist client store:`, err?.message ?? err);
+  }
+}
+
+loadClientsFromDisk();
+
 export function generateClientId(): string {
   return randomUUID();
 }
@@ -76,6 +124,7 @@ export function registerClient(data: {
 
   clients.set(clientId, client);
   enforceClientCap();
+  schedulePersist();
   return client;
 }
 

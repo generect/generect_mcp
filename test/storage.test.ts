@@ -67,3 +67,31 @@ test('client cap: in-use clients survive a registration flood', async () => {
     assert.equal(s.getClient(spam), undefined, `flood client ${spam} evicted`);
   }
 });
+
+test('client registry survives a restart (persisted to disk, reloaded on boot)', async () => {
+  const path = `/tmp/oc-unit-${process.pid}-${Date.now()}.json`;
+  const s1 = await freshStorage({ MCP_CLIENT_STORE_PATH: path, MCP_MAX_CLIENTS: '100' });
+  const c = s1.registerClient({ client_name: 'App', redirect_uris: ['https://claude.ai/cb'] });
+  assert.ok(s1.getClient(c.clientId), 'registered in the first process');
+
+  // A fresh module instance == a restarted server.
+  const s2 = await freshStorage({ MCP_CLIENT_STORE_PATH: path, MCP_MAX_CLIENTS: '100' });
+  const restored = s2.getClient(c.clientId);
+  assert.ok(restored, 'client must still be known after restart');
+  assert.deepEqual(restored.redirectUris, ['https://claude.ai/cb']);
+  const { unlinkSync } = await import('node:fs');
+  try {
+    unlinkSync(path);
+  } catch {}
+});
+
+test('a corrupt client store never prevents startup', async () => {
+  const path = `/tmp/oc-bad-${process.pid}-${Date.now()}.json`;
+  const { writeFileSync, unlinkSync } = await import('node:fs');
+  writeFileSync(path, 'not json at all');
+  const s = await freshStorage({ MCP_CLIENT_STORE_PATH: path });
+  assert.equal(s.getClient('anything'), undefined, 'starts clean instead of throwing');
+  try {
+    unlinkSync(path);
+  } catch {}
+});
