@@ -7,6 +7,7 @@ export interface ProtectedResourceMetadata {
   scopes_supported: string[];
   resource_name: string;
   resource_documentation?: string;
+  bearer_methods_supported?: string[];
   grant_types_supported?: string[];
   token_types_supported?: string[];
 }
@@ -21,6 +22,8 @@ export function getProtectedResourceMetadata(): ProtectedResourceMetadata {
     scopes_supported: ['generect:api'],
     resource_name: 'Generect MCP Server',
     resource_documentation: 'https://github.com/generect/generect_mcp',
+    // RFC 9728: the bearer token is sent in the Authorization header.
+    bearer_methods_supported: ['header'],
     grant_types_supported: ['authorization_code'],
     token_types_supported: ['bearer'],
   };
