@@ -98,6 +98,64 @@ async function validateApiToken(token: string): Promise<{ valid: boolean; error?
   }
 }
 
+// Log the user into Generect (email + password) and return an API token WITHOUT
+// them having to copy one: exchange credentials for a short-lived JWT, then reuse
+// or create a named per-client API token. The password is only forwarded to
+// Generect's own auth endpoint over TLS — it is never stored or logged here.
+async function loginAndMintToken(
+  email: string,
+  password: string,
+  tokenName: string,
+): Promise<{ token?: string; error?: string }> {
+  try {
+    const jwtRes = await fetch(`${GENERECT_API_BASE}/api/auth/jwt/create/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    if (jwtRes.status === 401 || jwtRes.status === 400) {
+      return { error: 'Invalid email or password.' };
+    }
+    if (jwtRes.status === 406) {
+      // Correct password, but the Generect account is not activated yet.
+      return { error: 'Your Generect account is not activated yet. Check your email to activate it, then try again.' };
+    }
+    if (!jwtRes.ok) {
+      return { error: 'Could not sign in right now (upstream error). Please try again.' };
+    }
+    const jwtBody = (await jwtRes.json().catch(() => ({}))) as { access?: string };
+    const access = jwtBody.access;
+    if (!access) return { error: 'Sign-in did not return a session. Please try again.' };
+    const auth = { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' };
+
+    // Reuse an existing active token with the same name to avoid proliferation.
+    try {
+      const listRes = await fetch(`${GENERECT_API_BASE}/api/auth/api_tokens/?limit=100`, { headers: auth });
+      if (listRes.ok) {
+        const data = (await listRes.json()) as {
+          results?: Array<{ token: string; name?: string; is_active?: boolean }>;
+        };
+        const existing = (data.results || []).find(t => t.is_active && t.name === tokenName && t.token);
+        if (existing) return { token: existing.token };
+      }
+    } catch {
+      /* fall through to mint */
+    }
+
+    const mintRes = await fetch(`${GENERECT_API_BASE}/api/auth/api_tokens/`, {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ name: tokenName }),
+    });
+    if (!mintRes.ok) return { error: 'Signed in, but could not create a connection token. Please try again.' };
+    const mintBody = (await mintRes.json().catch(() => ({}))) as { token?: string };
+    if (!mintBody.token) return { error: 'Could not obtain a connection token. Please try again.' };
+    return { token: mintBody.token };
+  } catch {
+    return { error: 'Failed to sign in. Please try again.' };
+  }
+}
+
 // Why a client could not be resolved — surfaced to the operator in logs and to
 // the user in the error page. "Unknown client_id" on its own is misleading: the
 // usual cause is that we REFUSED the client (disallowed redirect), not that it
@@ -302,23 +360,6 @@ async function handleAuthorizePost(req: Request, res: Response) {
     return;
   }
 
-  if (!apiToken || !apiToken.trim()) {
-    const client = await resolveClient(clientId, req.ip);
-    res.status(400).send(
-      renderLoginPage({
-        clientId,
-        redirectUri,
-        state,
-        codeChallenge,
-        codeChallengeMethod,
-        scope,
-        clientName: client?.clientName,
-        error: 'API token is required',
-      }),
-    );
-    return;
-  }
-
   const client = await resolveClient(clientId, req.ip);
   if (!client) {
     res.status(400).send(renderErrorPage({ error: 'invalid_client', errorDescription: 'Unknown client_id' }));
@@ -330,8 +371,7 @@ async function handleAuthorizePost(req: Request, res: Response) {
     return;
   }
 
-  const validation = await validateApiToken(apiToken);
-  if (!validation.valid) {
+  const rerender = (error: string) =>
     res.status(400).send(
       renderLoginPage({
         clientId,
@@ -340,14 +380,37 @@ async function handleAuthorizePost(req: Request, res: Response) {
         codeChallenge,
         codeChallengeMethod,
         scope,
-        clientName: client.clientName,
-        error: validation.error || 'Invalid API token',
+        clientName: client!.clientName,
+        error,
       }),
     );
-    return;
+
+  // The user proves who they are either by pasting an API token, or by logging in
+  // with their Generect email + password (in which case we mint/reuse a named
+  // token for them so they never have to copy one).
+  const email = (req.body.email as string | undefined)?.trim();
+  const password = req.body.password as string | undefined;
+  let normalizedToken: string;
+
+  if (apiToken && apiToken.trim()) {
+    const validation = await validateApiToken(apiToken);
+    if (!validation.valid) return void rerender(validation.error || 'Invalid API token');
+    normalizedToken = apiToken.startsWith('Token ') ? apiToken : `Token ${apiToken}`;
+  } else if (email && password) {
+    let host = 'client';
+    try {
+      host = new URL(redirectUri).host;
+    } catch {
+      /* keep default */
+    }
+    const tokenName = `MCP — ${client.clientName || host}`;
+    const result = await loginAndMintToken(email, password, tokenName);
+    if (result.error || !result.token) return void rerender(result.error || 'Could not sign in.');
+    normalizedToken = `Token ${result.token}`;
+  } else {
+    return void rerender('Enter your email and password, or an API token.');
   }
 
-  const normalizedToken = apiToken.startsWith('Token ') ? apiToken : `Token ${apiToken}`;
   const userId = generateUserId();
 
   const code = createAuthCode({

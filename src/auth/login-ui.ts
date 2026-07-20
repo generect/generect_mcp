@@ -82,7 +82,7 @@ export function renderLoginPage(params: {
       color: #374151;
       margin-bottom: 8px;
     }
-    input[type="text"], input[type="password"] {
+    input[type="text"], input[type="password"], input[type="email"] {
       width: 100%;
       padding: 12px 14px;
       border: 1px solid #d1d5db;
@@ -245,22 +245,30 @@ export function renderLoginPage(params: {
         </div>
 
         <div class="form-group">
-          <label for="api_token">Generect API Token</label>
-          <input
-            type="password"
-            id="api_token"
-            name="api_token"
-            placeholder="Enter your API token"
-            required
-            autocomplete="off"
-          >
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" placeholder="you@company.com" autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" placeholder="Your Generect password" autocomplete="current-password">
           <div class="hint">
-            Get your API token from <a href="https://beta.generect.com" target="_blank">beta.generect.com</a>
+            Log in with your Generect account — we'll create a connection token for you automatically. Nothing to copy.
           </div>
         </div>
 
+        <details style="margin: 4px 0 8px;">
+          <summary style="cursor: pointer; color: #666; font-size: 13px;">Or authorize with an API token instead</summary>
+          <div class="form-group" style="margin-top: 10px;">
+            <label for="api_token">Generect API Token</label>
+            <input type="password" id="api_token" name="api_token" placeholder="Enter your API token" autocomplete="off">
+            <div class="hint">
+              Get your API token from <a href="https://beta.generect.com" target="_blank">beta.generect.com</a>
+            </div>
+          </div>
+        </details>
+
         <button type="submit" id="submitBtn">
-          <span id="btnText">Authorize</span>
+          <span id="btnText">Log in &amp; Authorize</span>
         </button>
         <a href="${escapeHtml(cancelUrl.toString())}" class="cancel-link">Cancel</a>
       </form>
@@ -458,8 +466,9 @@ function escapeJs(str: string): string {
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-function escapeHtml(str: string): string {
-  return str
+function escapeHtml(str: string | undefined | null): string {
+  if (str == null) return '';
+  return String(str)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

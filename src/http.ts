@@ -22,6 +22,13 @@ const apiBase = process.env.GENERECT_API_BASE || 'https://api.generect.com';
 const rawApiKey = process.env.GENERECT_API_KEY || '';
 const apiKey = rawApiKey && rawApiKey.startsWith('Token ') ? rawApiKey : rawApiKey ? `Token ${rawApiKey}` : '';
 
+// Safety net: an unhandled rejection in an async route handler (e.g. a malformed
+// request) must NOT take down the whole process — that would drop every in-memory
+// MCP session and pending auth code. Log it and keep serving.
+process.on('unhandledRejection', reason => {
+  console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'unhandled_rejection', error: String(reason) }));
+});
+
 const app = express();
 // Trust the loopback reverse proxy (nginx) so req.ip reflects the real client
 // address from X-Forwarded-For for per-IP rate limiting. Only loopback is
