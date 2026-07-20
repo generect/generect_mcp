@@ -30,11 +30,26 @@ test('isBlockedIp allows ordinary public IPv4', () => {
 test('isBlockedIp handles IPv6 loopback, link-local, ULA, and mapped IPv4', () => {
   assert.equal(isBlockedIp('::1'), true);
   assert.equal(isBlockedIp('fe80::1'), true);
+  assert.equal(isBlockedIp('fe90::1'), true, 'all of fe80::/10 is link-local, not just fe80');
+  assert.equal(isBlockedIp('febf::1'), true);
   assert.equal(isBlockedIp('fc00::1'), true);
   assert.equal(isBlockedIp('fd12:3456::1'), true);
   assert.equal(isBlockedIp('::ffff:127.0.0.1'), true, 'IPv4-mapped loopback must be blocked');
   assert.equal(isBlockedIp('::ffff:169.254.169.254'), true, 'IPv4-mapped metadata must be blocked');
   assert.equal(isBlockedIp('2606:4700:4700::1111'), false, 'public IPv6 allowed');
+});
+
+test('isBlockedIp blocks IPv6-mapped HEX forms (the red-team bypass) and NAT64/compat', () => {
+  // These all decode to internal IPv4 but were written in hex/compat notation and
+  // slipped past the old dotted-decimal-only regex.
+  assert.equal(isBlockedIp('::ffff:7f00:1'), true, '::ffff:7f00:1 == 127.0.0.1');
+  assert.equal(isBlockedIp('::ffff:a9fe:a9fe'), true, '::ffff:a9fe:a9fe == 169.254.169.254 metadata');
+  assert.equal(isBlockedIp('::ffff:0a00:0005'), true, '::ffff:0a00:0005 == 10.0.0.5');
+  assert.equal(isBlockedIp('::127.0.0.1'), true, 'IPv4-compatible loopback');
+  assert.equal(isBlockedIp('64:ff9b::7f00:1'), true, 'NAT64 embedding 127.0.0.1');
+  // Numeric IPv4 encodings resolve through getaddrinfo at fetch time, but the
+  // literal parser must still block the canonical ones it can see.
+  assert.equal(isBlockedIp('::ffff:c0a8:0001'), true, '::ffff:c0a8:0001 == 192.168.0.1');
 });
 
 test('isBlockedIp blocks anything that is not a recognizable IP', () => {
@@ -61,8 +76,9 @@ test('assertPublicHttpsUrl blocks literal private/loopback/metadata IP hosts (no
 });
 
 test('assertPublicHttpsUrl allows a literal public IP host', async () => {
-  const url = await assertPublicHttpsUrl('https://8.8.8.8/metadata.json');
+  const { url, pinnedAddress } = await assertPublicHttpsUrl('https://8.8.8.8/metadata.json');
   assert.equal(url.hostname, '8.8.8.8');
+  assert.equal(pinnedAddress, '8.8.8.8', 'literal public IP is pinned for the connection');
 });
 
 test('assertPublicHttpsUrl rejects malformed URLs', async () => {

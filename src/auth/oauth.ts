@@ -26,6 +26,10 @@ const CIMD_ENABLED = process.env.MCP_ENABLE_CIMD !== 'false';
 // defense-in-depth; the hard memory bound is the client-map cap in storage.ts.
 const REGISTER_MAX = Number(process.env.MCP_REGISTER_RATE_MAX || '60');
 const REGISTER_WINDOW_MS = Number(process.env.MCP_REGISTER_RATE_WINDOW_MS || String(60 * 60 * 1000));
+// Token submissions on /oauth/authorize per IP per window (each fires a billable
+// upstream validation → an oracle if unbounded).
+const AUTHORIZE_MAX = Number(process.env.MCP_AUTHORIZE_RATE_MAX || '30');
+const AUTHORIZE_WINDOW_MS = Number(process.env.MCP_AUTHORIZE_RATE_WINDOW_MS || String(60 * 60 * 1000));
 
 interface ClientMetadataDocument {
   client_name?: string;
@@ -106,7 +110,7 @@ export function takeLastResolveFailure(): string | null {
   return r;
 }
 
-async function resolveClient(clientId: string): Promise<OAuthClient | null> {
+async function resolveClient(clientId: string, ip?: string): Promise<OAuthClient | null> {
   lastResolveFailure = null;
   let client = await getClient(clientId);
   if (client) {
@@ -117,6 +121,15 @@ async function resolveClient(clientId: string): Promise<OAuthClient | null> {
     client = getClientByMetadataUrl(clientId);
     if (client) {
       return client;
+    }
+
+    // Rate-limit the CIMD path per IP: it is reachable unauthenticated from
+    // /oauth/authorize and each distinct URL becomes a new registration + a new
+    // outbound fetch. Without this it bypassed the /oauth/register limiter and
+    // could be looped to exhaust memory / amplify requests.
+    if (!rateLimitAllow(`cimd:${ip || 'unknown'}`, REGISTER_MAX, REGISTER_WINDOW_MS)) {
+      lastResolveFailure = 'Too many client registrations from this address. Please retry later.';
+      return null;
     }
 
     const metadata = await fetchClientMetadata(clientId);
@@ -219,7 +232,7 @@ async function handleAuthorizeGet(req: Request, res: Response) {
     return;
   }
 
-  const client = await resolveClient(clientId);
+  const client = await resolveClient(clientId, req.ip);
   if (!client) {
     // Say WHY. "Unknown client_id" alone sent operators hunting for a
     // registration problem when the real cause was that we refused the client.
@@ -274,8 +287,23 @@ async function handleAuthorizePost(req: Request, res: Response) {
   const scope = req.body.scope as string;
   const apiToken = req.body.api_token as string;
 
+  // Rate-limit token submission per IP. Each attempt fires a real (billable)
+  // validation call against the submitted token and returns a distinguishable
+  // valid/invalid result — i.e. an unauthenticated token-validity + credit-burn
+  // oracle if left unbounded.
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  if (!rateLimitAllow(`authorize:${ip}`, AUTHORIZE_MAX, AUTHORIZE_WINDOW_MS)) {
+    res.status(429).send(
+      renderErrorPage({
+        error: 'temporarily_unavailable',
+        errorDescription: 'Too many attempts. Please retry later.',
+      }),
+    );
+    return;
+  }
+
   if (!apiToken || !apiToken.trim()) {
-    const client = await resolveClient(clientId);
+    const client = await resolveClient(clientId, req.ip);
     res.status(400).send(
       renderLoginPage({
         clientId,
@@ -291,7 +319,7 @@ async function handleAuthorizePost(req: Request, res: Response) {
     return;
   }
 
-  const client = await resolveClient(clientId);
+  const client = await resolveClient(clientId, req.ip);
   if (!client) {
     res.status(400).send(renderErrorPage({ error: 'invalid_client', errorDescription: 'Unknown client_id' }));
     return;
@@ -391,7 +419,7 @@ async function handleToken(req: Request, res: Response) {
     return;
   }
 
-  const client = await resolveClient(clientId);
+  const client = await resolveClient(clientId, req.ip);
   if (!client) {
     res.status(400).json({
       error: 'invalid_client',
@@ -466,6 +494,13 @@ async function handleRefreshGrant(req: Request, res: Response) {
 
   if (!refreshToken) {
     res.status(400).json({ error: 'invalid_request', error_description: 'refresh_token is required' });
+    return;
+  }
+  // Public clients (token_endpoint_auth_method: none) MUST send client_id on
+  // refresh (RFC 6749 §6) so a stolen refresh token can't be redeemed without
+  // also knowing which client it belongs to.
+  if (!clientId) {
+    res.status(400).json({ error: 'invalid_request', error_description: 'client_id is required' });
     return;
   }
 
