@@ -9,42 +9,50 @@
 //   - a hard timeout, no redirect following, and a response-size cap.
 import { lookup } from 'node:dns/promises';
 import net from 'node:net';
+import ipaddr from 'ipaddr.js';
+import { Agent } from 'undici';
 
 // True for addresses that must never be reachable via a client-controlled URL.
+// Only ordinary PUBLIC UNICAST addresses are allowed; every special range
+// (loopback, RFC1918/unique-local, link-local incl. 169.254.169.254 cloud
+// metadata, CGNAT, reserved, multicast, benchmarking, …) is blocked, for both
+// IPv4 and IPv6. Hand-rolled prefix matching previously missed IPv6-mapped hex
+// forms (e.g. ::ffff:7f00:1 == 127.0.0.1); we now use a vetted parser and, for
+// any IPv4-mapped IPv6 address, evaluate the embedded IPv4.
 export function isBlockedIp(ip: string): boolean {
-  if (net.isIPv4(ip)) {
-    const p = ip.split('.').map(Number);
-    if (p.length !== 4 || p.some(n => Number.isNaN(n) || n < 0 || n > 255)) return true;
-    const [a, b] = p;
-    if (a === 0) return true; // "this" network
-    if (a === 10) return true; // RFC1918
-    if (a === 127) return true; // loopback
-    if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 cloud metadata
-    if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918
-    if (a === 192 && b === 168) return true; // RFC1918
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT (RFC6598)
-    if (a === 192 && b === 0) return true; // 192.0.0.0/24 + 192.0.2.0/24 test nets
-    if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
-    if (a >= 224) return true; // multicast + reserved (224+)
-    return false;
+  let addr: ipaddr.IPv4 | ipaddr.IPv6;
+  try {
+    addr = ipaddr.parse(ip.replace(/^\[|\]$/g, ''));
+  } catch {
+    return true; // not a recognizable IP → block
   }
-  if (net.isIPv6(ip)) {
-    const low = ip.toLowerCase().replace(/^\[|\]$/g, '');
-    if (low === '::1' || low === '::') return true; // loopback / unspecified
-    if (low.startsWith('fe80')) return true; // link-local
-    if (low.startsWith('fc') || low.startsWith('fd')) return true; // unique-local
-    if (low.startsWith('ff')) return true; // multicast
-    const mapped = low.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-    if (mapped) return isBlockedIp(mapped[1]); // IPv4-mapped
-    return false;
+  if (addr.kind() === 'ipv6') {
+    const v6 = addr as ipaddr.IPv6;
+    // Unwrap IPv4-mapped (::ffff:a.b.c.d in any notation) and IPv4-compatible
+    // (::a.b.c.d) so an embedded private/loopback v4 can't hide behind v6 syntax.
+    if (v6.isIPv4MappedAddress()) return isBlockedIp(v6.toIPv4Address().toString());
+    // NAT64 well-known prefix 64:ff9b::/96 embeds an IPv4 in the low 32 bits.
+    if (v6.match(ipaddr.parse('64:ff9b::'), 96)) {
+      const b = v6.toByteArray();
+      return isBlockedIp([b[12], b[13], b[14], b[15]].join('.'));
+    }
   }
-  return true; // not a recognizable IP → block
+  // range() === 'unicast' is the only public, routable-on-the-internet class.
+  return addr.range() !== 'unicast';
+}
+
+export interface ValidatedTarget {
+  url: URL;
+  // The exact IP the connection MUST use (all resolved answers were validated;
+  // this one is pinned to defeat DNS rebinding between check and connect).
+  pinnedAddress: string;
+  family: 4 | 6;
 }
 
 // Validate that a URL is https and resolves ONLY to public addresses. Returns the
-// parsed URL or throws. Resolving all answers defends against a hostname with one
-// public and one private A record.
-export async function assertPublicHttpsUrl(rawUrl: string): Promise<URL> {
+// parsed URL plus the single IP the fetch must connect to. Resolving all answers
+// defends against a hostname with one public and one private A record.
+export async function assertPublicHttpsUrl(rawUrl: string): Promise<ValidatedTarget> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -57,14 +65,15 @@ export async function assertPublicHttpsUrl(rawUrl: string): Promise<URL> {
   const host = url.hostname.replace(/^\[|\]$/g, '');
   if (net.isIP(host)) {
     if (isBlockedIp(host)) throw new Error(`metadata URL resolves to a blocked address (${host})`);
-    return url;
+    return { url, pinnedAddress: host, family: net.isIPv6(host) ? 6 : 4 };
   }
   const answers = await lookup(host, { all: true });
   if (!answers.length) throw new Error('metadata URL host did not resolve');
   for (const a of answers) {
     if (isBlockedIp(a.address)) throw new Error(`metadata URL host resolves to a blocked address (${a.address})`);
   }
-  return url;
+  const first = answers[0];
+  return { url, pinnedAddress: first.address, family: first.family === 6 ? 6 : 4 };
 }
 
 // Fetch JSON from a client-controlled URL with all SSRF guards applied.
@@ -74,7 +83,21 @@ export async function safeFetchJson(
 ): Promise<any> {
   const timeoutMs = opts.timeoutMs ?? 5000;
   const maxBytes = opts.maxBytes ?? 256 * 1024;
-  const url = await assertPublicHttpsUrl(rawUrl);
+  const { url, pinnedAddress, family } = await assertPublicHttpsUrl(rawUrl);
+
+  // Pin the connection to the exact IP we validated. Without this, fetch/undici
+  // re-resolves the hostname at connect time, so a low-TTL DNS record can rebind
+  // to 127.0.0.1/169.254.169.254 in the gap between our check and the connection
+  // (TOCTOU). The custom lookup keeps TLS SNI/cert on the original hostname.
+  // undici calls lookup with `{ all: true }` and expects an array of
+  // {address, family}; other callers expect the (err, address, family) tuple.
+  // Support both so the pin actually takes effect (a wrong signature silently
+  // fails the connection).
+  const pinnedLookup = (_hostname: string, options: any, cb: any) => {
+    if (options && options.all) return cb(null, [{ address: pinnedAddress, family }]);
+    return cb(null, pinnedAddress, family);
+  };
+  const dispatcher = new Agent({ connect: { lookup: pinnedLookup } });
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -84,7 +107,8 @@ export async function safeFetchJson(
       redirect: 'manual', // never follow a redirect into an internal target
       signal: controller.signal,
       headers: { Accept: 'application/json' },
-    });
+      dispatcher,
+    } as RequestInit & { dispatcher: Agent });
     // undici surfaces a blocked redirect as an opaqueredirect response (status 0)
     // or a 3xx; reject either — following it would re-open the SSRF hole.
     if ((res as any).type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
@@ -119,5 +143,6 @@ export async function safeFetchJson(
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } finally {
     clearTimeout(timer);
+    dispatcher.close().catch(() => {});
   }
 }

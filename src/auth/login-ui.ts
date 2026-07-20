@@ -207,6 +207,19 @@ export function renderLoginPage(params: {
     <div class="content">
       ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
 
+      ${(() => {
+        // Show the user WHERE their authorization will be delivered. If a
+        // malicious app tricked them onto this page, the destination host is the
+        // tell — a Generect connection should go to a client they recognize.
+        let host = '';
+        try {
+          host = new URL(redirectUri).host;
+        } catch {
+          host = redirectUri;
+        }
+        return `<div style="margin:0 0 16px;padding:10px 12px;border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;font-size:13px;color:#444;">Your access will be sent to <strong>${escapeHtml(host)}</strong>. Only continue if you started this connection there.</div>`;
+      })()}
+
       <form method="POST" action="/oauth/authorize" id="authForm">
         <input type="hidden" name="client_id" value="${escapeHtml(clientId)}">
         <input type="hidden" name="redirect_uri" value="${escapeHtml(redirectUri)}">
