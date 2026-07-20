@@ -21,27 +21,6 @@ import {
 const apiBase = process.env.GENERECT_API_BASE || 'https://api.generect.com';
 const rawApiKey = process.env.GENERECT_API_KEY || '';
 const apiKey = rawApiKey && rawApiKey.startsWith('Token ') ? rawApiKey : rawApiKey ? `Token ${rawApiKey}` : '';
-const allowedOrigins = process.env.MCP_ALLOWED_ORIGINS
-  ? process.env.MCP_ALLOWED_ORIGINS.split(',')
-      .map(origin => origin.trim())
-      .filter(Boolean)
-  : [
-      'https://beta.generect.com',
-      'https://generect.com',
-      'https://app.generect.com',
-      // First-party MCP clients whose web apps call the discovery endpoints
-      // from their own origin during connect.
-      'https://claude.ai',
-      'https://linear.app',
-    ];
-
-const isAllowedOrigin = (origin: string): boolean => {
-  // Always allow localhost for local development.
-  if (/^https?:\/\/localhost(?::\d+)?$/i.test(origin)) return true;
-  if (/^https?:\/\/127\.0\.0\.1(?::\d+)?$/i.test(origin)) return true;
-  if (/^https:\/\/([a-z0-9-]+\.)*generect\.com$/i.test(origin)) return true;
-  return allowedOrigins.includes(origin);
-};
 
 const app = express();
 // Trust the loopback reverse proxy (nginx) so req.ip reflects the real client
@@ -87,24 +66,22 @@ app.use((req: Request, res: Response, next) => {
 });
 
 app.use(express.json());
+// CORS: this server authenticates with a Bearer/API token that the client sets
+// explicitly — there is NO cookie/ambient credential — so restricting Origins adds
+// no security and only breaks browser-based MCP connectors (Linear web/desktop,
+// Claude.ai, MCP Inspector, ChatGPT). Those connectors fetch the .well-known
+// discovery docs AND read the 401 `WWW-Authenticate` header from the browser, both
+// of which require CORS. We reflect any Origin (never with credentials) and expose
+// the protocol headers. This is what fixes Linear's "did not advertise a supported
+// oauth flow": without exposed CORS the browser cannot read discovery or the 401.
 app.use(
   cors({
-    origin: (origin, callback) => {
-      // Allow non-browser clients (e.g. curl, MCP clients) that do not set Origin.
-      if (!origin) return callback(null, true);
-      if (isAllowedOrigin(origin)) return callback(null, true);
-      // Log WHICH origin was refused — without this the error is undiagnosable
-      // (it previously surfaced as a bare stack trace with no origin).
-      console.error(
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          event: 'cors_rejected',
-          origin,
-        }),
-      );
-      return callback(new Error(`CORS origin is not allowed: ${origin}`));
-    },
+    origin: true, // reflect the request Origin; bearer auth means no cookie risk
+    credentials: false, // never combine reflected/`*` origin with credentials
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'Mcp-Session-Id', 'Mcp-Protocol-Version'],
     exposedHeaders: ['Mcp-Session-Id', 'WWW-Authenticate'],
+    maxAge: 86400,
   }),
 );
 
@@ -118,9 +95,42 @@ app.use(
   }),
 );
 
-app.get('/.well-known/oauth-protected-resource', handleProtectedResourceMetadata);
-app.get('/.well-known/oauth-authorization-server', handleAuthorizationServerMetadata);
-app.get('/.well-known/jwks.json', handleJwks);
+// OAuth discovery metadata is PUBLIC (no secrets) and must be readable cross-origin
+// by any MCP client's browser. Serve it with an open CORS header, and at every
+// path variant clients probe. Per RFC 8414/9728 the metadata URL for a resource
+// with a path (`.../mcp`) is formed by INSERTING the well-known segment between
+// host and path (`/.well-known/oauth-protected-resource/mcp`); different MCP
+// clients also try a `/mcp`-prefixed form. Serving only the root path made
+// clients that use path insertion (e.g. Linear) fail discovery with
+// "did not advertise a supported oauth flow".
+// (CORS + OPTIONS preflight are handled globally by the cors() middleware above.)
+function metadata(handler: (req: Request, res: Response) => void) {
+  return (req: Request, res: Response) => {
+    res.set('Cache-Control', 'public, max-age=3600');
+    handler(req, res);
+  };
+}
+// PRM (RFC 9728): root + path-inserted + /mcp-prefixed.
+const prmPaths = [
+  '/.well-known/oauth-protected-resource',
+  '/.well-known/oauth-protected-resource/mcp',
+  '/mcp/.well-known/oauth-protected-resource',
+];
+// AS metadata (RFC 8414): root + path-inserted + /mcp-prefixed, plus the
+// openid-configuration alias that the reference MCP SDK and some clients (ChatGPT)
+// probe as a fallback. Body is our OAuth2 AS metadata; clients that reach the
+// oauth-authorization-server URL first (Claude/Cursor/VS Code) never use this.
+const asPaths = [
+  '/.well-known/oauth-authorization-server',
+  '/.well-known/oauth-authorization-server/mcp',
+  '/mcp/.well-known/oauth-authorization-server',
+  '/.well-known/openid-configuration',
+  '/.well-known/openid-configuration/mcp',
+  '/mcp/.well-known/openid-configuration',
+];
+app.get(prmPaths, metadata(handleProtectedResourceMetadata));
+app.get(asPaths, metadata(handleAuthorizationServerMetadata));
+app.get('/.well-known/jwks.json', metadata(handleJwks));
 
 app.use('/oauth', oauthRouter);
 
