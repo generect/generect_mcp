@@ -141,6 +141,13 @@ app.get('/.well-known/jwks.json', metadata(handleJwks));
 
 app.use('/oauth', oauthRouter);
 
+// Route a rejection from an async handler to the error middleware (and actually
+// send a response) instead of letting it become an unhandled rejection that hangs
+// the socket.
+const wrapAsync =
+  (fn: (req: any, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: (e?: unknown) => void) =>
+    Promise.resolve(fn(req, res)).catch(next);
+
 const transports = new Map<string, StreamableHTTPServerTransport>();
 
 function createMcpServer() {
@@ -155,55 +162,67 @@ app.options('/mcp', (req: Request, res: Response) => {
   res.status(204).end();
 });
 
-app.post('/mcp', requireBearerAuth, async (req: AuthenticatedRequest, res: Response) => {
-  const sessionId = (req.headers['mcp-session-id'] as string | undefined) ?? undefined;
-  let transport = sessionId ? transports.get(sessionId) : undefined;
+app.post(
+  '/mcp',
+  requireBearerAuth,
+  wrapAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const sessionId = (req.headers['mcp-session-id'] as string | undefined) ?? undefined;
+    let transport = sessionId ? transports.get(sessionId) : undefined;
 
-  if (!transport && isInitializeRequest(req.body)) {
-    transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: sessionId => {
-        transports.set(sessionId, transport!);
-      },
-    });
-    transport.onclose = () => {
-      if (transport!.sessionId) {
-        transports.delete(transport!.sessionId);
-      }
-    };
-    const server = createMcpServer();
-    await server.connect(transport);
-  }
+    if (!transport && isInitializeRequest(req.body)) {
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: sessionId => {
+          transports.set(sessionId, transport!);
+        },
+      });
+      transport.onclose = () => {
+        if (transport!.sessionId) {
+          transports.delete(transport!.sessionId);
+        }
+      };
+      const server = createMcpServer();
+      await server.connect(transport);
+    }
 
-  if (!transport) {
-    res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No session' }, id: null });
-    return;
-  }
+    if (!transport) {
+      res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No session' }, id: null });
+      return;
+    }
 
-  await transport.handleRequest(req as any, res as any, req.body);
-});
+    await transport.handleRequest(req as any, res as any, req.body);
+  }),
+);
 
-app.get('/mcp', requireBearerAuth, async (req: AuthenticatedRequest, res: Response) => {
-  const sessionId = req.headers['mcp-session-id'] as string;
-  const transport = sessionId ? transports.get(sessionId) : undefined;
-  if (!transport) {
-    res.status(400).send('Invalid or missing session ID');
-    return;
-  }
-  (req as any).apiToken = req.apiToken;
-  await transport.handleRequest(req as any, res as any);
-});
+app.get(
+  '/mcp',
+  requireBearerAuth,
+  wrapAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const sessionId = req.headers['mcp-session-id'] as string;
+    const transport = sessionId ? transports.get(sessionId) : undefined;
+    if (!transport) {
+      res.status(400).send('Invalid or missing session ID');
+      return;
+    }
+    (req as any).apiToken = req.apiToken;
+    await transport.handleRequest(req as any, res as any);
+  }),
+);
 
-app.delete('/mcp', requireBearerAuth, async (req: AuthenticatedRequest, res: Response) => {
-  const sessionId = req.headers['mcp-session-id'] as string;
-  const transport = sessionId ? transports.get(sessionId) : undefined;
-  if (!transport) {
-    res.status(400).send('Invalid or missing session ID');
-    return;
-  }
-  (req as any).apiToken = req.apiToken;
-  await transport.handleRequest(req as any, res as any);
-});
+app.delete(
+  '/mcp',
+  requireBearerAuth,
+  wrapAsync(async (req: AuthenticatedRequest, res: Response) => {
+    const sessionId = req.headers['mcp-session-id'] as string;
+    const transport = sessionId ? transports.get(sessionId) : undefined;
+    if (!transport) {
+      res.status(400).send('Invalid or missing session ID');
+      return;
+    }
+    (req as any).apiToken = req.apiToken;
+    await transport.handleRequest(req as any, res as any);
+  }),
+);
 
 app.get('/', (req: Request, res: Response) => {
   res.json({
@@ -223,6 +242,14 @@ app.get('/', (req: Request, res: Response) => {
 
 app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Terminal error handler: a thrown/rejected route now returns a response instead
+// of hanging the socket. Never leaks internals.
+app.use((err: unknown, _req: Request, res: Response, _next: (e?: unknown) => void) => {
+  console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'request_error', error: String(err) }));
+  if (res.headersSent) return;
+  res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
 });
 
 const port = Number(process.env.MCP_PORT || 3000);
