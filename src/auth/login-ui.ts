@@ -7,8 +7,9 @@ export function renderLoginPage(params: {
   scope: string;
   clientName?: string;
   error?: string;
+  nonce?: string;
 }): string {
-  const { clientId, redirectUri, state, codeChallenge, codeChallengeMethod, scope, clientName, error } = params;
+  const { clientId, redirectUri, state, codeChallenge, codeChallengeMethod, scope, clientName, error, nonce } = params;
 
   // Build cancel URL that redirects back with error
   const cancelUrl = new URL('/oauth/authorize', 'http://localhost');
@@ -201,7 +202,7 @@ export function renderLoginPage(params: {
   <div class="container">
     <div class="header">
       <h1>Generect MCP</h1>
-      <p>Authorize ${clientName || 'an application'} to access your Generect API</p>
+      <p>Authorize ${escapeHtml(clientName) || 'an application'} to access your Generect API</p>
     </div>
 
     <div class="content">
@@ -279,7 +280,7 @@ export function renderLoginPage(params: {
     </div>
   </div>
 
-  <script>
+  <script nonce="${nonce || ''}">
     document.getElementById('authForm').addEventListener('submit', function(e) {
       const btn = document.getElementById('submitBtn');
       const btnText = document.getElementById('btnText');
@@ -348,8 +349,13 @@ export function renderErrorPage(params: { error: string; errorDescription?: stri
 </html>`;
 }
 
-export function renderRedirectPage(params: { redirectUri: string; authorizationCode: string; state?: string }): string {
-  const { redirectUri, authorizationCode, state } = params;
+export function renderRedirectPage(params: {
+  redirectUri: string;
+  authorizationCode: string;
+  state?: string;
+  nonce?: string;
+}): string {
+  const { redirectUri, authorizationCode, state, nonce } = params;
 
   // Build the final redirect URL with query parameters
   const finalRedirectUrl = new URL(redirectUri);
@@ -442,9 +448,10 @@ export function renderRedirectPage(params: { redirectUri: string; authorizationC
       Click here to continue
     </a>
   </div>
-  <script>
-    // Attempt immediate redirect
-    const redirectUrl = '${escapeJs(redirectUrlString)}';
+  <script nonce="${nonce || ''}">
+    // Attempt immediate redirect. JSON.stringify produces a safe JS string
+    // literal; the URL is already percent-encoded by the WHATWG serializer.
+    const redirectUrl = ${JSON.stringify(redirectUrlString)};
 
     // Small delay to ensure page is fully loaded
     setTimeout(function() {

@@ -1,4 +1,5 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
+import { randomBytes, createHash } from 'node:crypto';
 import { renderLoginPage, renderErrorPage, renderRedirectPage } from './login-ui.js';
 import {
   getClient,
@@ -26,10 +27,15 @@ const CIMD_ENABLED = process.env.MCP_ENABLE_CIMD !== 'false';
 // defense-in-depth; the hard memory bound is the client-map cap in storage.ts.
 const REGISTER_MAX = Number(process.env.MCP_REGISTER_RATE_MAX || '60');
 const REGISTER_WINDOW_MS = Number(process.env.MCP_REGISTER_RATE_WINDOW_MS || String(60 * 60 * 1000));
-// Token submissions on /oauth/authorize per IP per window (each fires a billable
-// upstream validation → an oracle if unbounded).
-const AUTHORIZE_MAX = Number(process.env.MCP_AUTHORIZE_RATE_MAX || '30');
+// Token/credential submissions on /oauth/authorize per IP per window. Each fires a
+// real upstream call (token validation OR a login to Generect), so an unbounded
+// endpoint is a validity/credential-stuffing oracle. Lowered from 30 now that the
+// password path exists.
+const AUTHORIZE_MAX = Number(process.env.MCP_AUTHORIZE_RATE_MAX || '10');
 const AUTHORIZE_WINDOW_MS = Number(process.env.MCP_AUTHORIZE_RATE_WINDOW_MS || String(60 * 60 * 1000));
+// Additional per-EMAIL cap on password logins, to stop password-spraying that a
+// per-IP limit alone (or a botnet) would miss.
+const LOGIN_EMAIL_MAX = Number(process.env.MCP_LOGIN_EMAIL_MAX || '5');
 
 interface ClientMetadataDocument {
   client_name?: string;
@@ -68,11 +74,39 @@ async function fetchClientMetadata(metadataUrl: string): Promise<ClientMetadataD
 }
 
 const GENERECT_API_BASE = process.env.GENERECT_API_BASE || 'https://api.generect.com';
+const UPSTREAM_TIMEOUT_MS = Number(process.env.MCP_UPSTREAM_TIMEOUT_MS || '15000');
+
+// fetch with a hard timeout, so a slow/hanging Generect upstream can never tie up
+// an OAuth request handler indefinitely.
+async function timedFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs = UPSTREAM_TIMEOUT_MS,
+): Promise<globalThis.Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Bound and sanitize a human label that ends up in a token name / the page. Keep
+// it to plain, safe characters so an attacker-controlled client_name can never be
+// used for injection anywhere downstream (e.g. the Generect token list).
+function safeLabel(s: string | undefined, max = 40): string {
+  return (s || 'client')
+    .replace(/[^\w .,\-()/]+/g, ' ')
+    .trim()
+    .slice(0, max)
+    .trim();
+}
 
 async function validateApiToken(token: string): Promise<{ valid: boolean; error?: string }> {
   try {
     const normalizedToken = token.startsWith('Token ') ? token : `Token ${token}`;
-    const res = await fetch(`${GENERECT_API_BASE}/api/linkedin/leads/by_link/`, {
+    const res = await timedFetch(`${GENERECT_API_BASE}/api/linkedin/leads/by_link/`, {
       method: 'POST',
       headers: {
         Authorization: normalizedToken,
@@ -108,7 +142,7 @@ async function loginAndMintToken(
   tokenName: string,
 ): Promise<{ token?: string; error?: string }> {
   try {
-    const jwtRes = await fetch(`${GENERECT_API_BASE}/api/auth/jwt/create/`, {
+    const jwtRes = await timedFetch(`${GENERECT_API_BASE}/api/auth/jwt/create/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
@@ -130,7 +164,7 @@ async function loginAndMintToken(
 
     // Reuse an existing active token with the same name to avoid proliferation.
     try {
-      const listRes = await fetch(`${GENERECT_API_BASE}/api/auth/api_tokens/?limit=100`, { headers: auth });
+      const listRes = await timedFetch(`${GENERECT_API_BASE}/api/auth/api_tokens/?limit=100`, { headers: auth });
       if (listRes.ok) {
         const data = (await listRes.json()) as {
           results?: Array<{ token: string; name?: string; is_active?: boolean }>;
@@ -142,7 +176,7 @@ async function loginAndMintToken(
       /* fall through to mint */
     }
 
-    const mintRes = await fetch(`${GENERECT_API_BASE}/api/auth/api_tokens/`, {
+    const mintRes = await timedFetch(`${GENERECT_API_BASE}/api/auth/api_tokens/`, {
       method: 'POST',
       headers: auth,
       body: JSON.stringify({ name: tokenName }),
@@ -238,11 +272,51 @@ async function resolveClient(clientId: string, ip?: string): Promise<OAuthClient
 
 export const oauthRouter = Router();
 
-oauthRouter.get('/authorize', handleAuthorizeGet);
-oauthRouter.post('/authorize', handleAuthorizePost);
-oauthRouter.post('/token', handleToken);
-oauthRouter.post('/register', handleRegister);
-oauthRouter.post('/revoke', handleRevoke);
+// Per-response CSP with a nonce. Defense-in-depth for the consent page (which now
+// has a password field): even if a value slipped past escaping, an injected
+// <script> can't run without the nonce, and default-src 'none' blocks exfiltration
+// channels. The two legitimate inline scripts carry this nonce.
+oauthRouter.use((_req: Request, res: Response, next: NextFunction) => {
+  const nonce = randomBytes(16).toString('base64');
+  (res.locals as Record<string, unknown>).cspNonce = nonce;
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'none'",
+      `script-src 'nonce-${nonce}'`,
+      "style-src 'unsafe-inline'",
+      "img-src 'self' data:",
+      "form-action 'self'",
+      "base-uri 'none'",
+      "frame-ancestors 'none'",
+    ].join('; '),
+  );
+  next();
+});
+
+// Wrap async handlers so a rejection is routed to the error middleware (and a
+// response is actually sent) instead of becoming an unhandled rejection that
+// leaves the socket hanging.
+const wrap =
+  (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) =>
+    Promise.resolve(fn(req, res)).catch(next);
+
+oauthRouter.get('/authorize', wrap(handleAuthorizeGet));
+oauthRouter.post('/authorize', wrap(handleAuthorizePost));
+oauthRouter.post('/token', wrap(handleToken));
+oauthRouter.post('/register', wrap(handleRegister));
+oauthRouter.post('/revoke', wrap(handleRevoke));
+
+// Terminal error handler for the OAuth router: never leak internals; always send.
+oauthRouter.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  console.error(
+    JSON.stringify({ ts: new Date().toISOString(), event: 'oauth_handler_error', path: req.path, error: String(err) }),
+  );
+  if (res.headersSent) return;
+  res
+    .status(500)
+    .send(renderErrorPage({ error: 'server_error', errorDescription: 'Something went wrong. Please try again.' }));
+});
 
 async function handleAuthorizeGet(req: Request, res: Response) {
   const clientId = req.query.client_id as string;
@@ -332,6 +406,7 @@ async function handleAuthorizeGet(req: Request, res: Response) {
       scope,
       clientName: client.clientName,
       error: error === 'invalid_token' ? 'Invalid API token. Please check and try again.' : undefined,
+      nonce: (res.locals as Record<string, unknown>).cspNonce as string,
     }),
   );
 }
@@ -382,6 +457,7 @@ async function handleAuthorizePost(req: Request, res: Response) {
         scope,
         clientName: client!.clientName,
         error,
+        nonce: (res.locals as Record<string, unknown>).cspNonce as string,
       }),
     );
 
@@ -397,13 +473,23 @@ async function handleAuthorizePost(req: Request, res: Response) {
     if (!validation.valid) return void rerender(validation.error || 'Invalid API token');
     normalizedToken = apiToken.startsWith('Token ') ? apiToken : `Token ${apiToken}`;
   } else if (email && password) {
+    // Second rate-limit key on the EMAIL, so per-IP limiting can't be sidestepped
+    // by spraying one password across many accounts (each attempt is a real login
+    // to Generect, which the probe showed has no throttling of its own).
+    if (!rateLimitAllow(`login:${email.toLowerCase()}`, LOGIN_EMAIL_MAX, AUTHORIZE_WINDOW_MS)) {
+      return void rerender('Too many sign-in attempts for this account. Please retry later.');
+    }
     let host = 'client';
     try {
       host = new URL(redirectUri).host;
     } catch {
       /* keep default */
     }
-    const tokenName = `MCP — ${client.clientName || host}`;
+    // Token name is UNIQUE per client_id (hash suffix), so an attacker who
+    // registers a client with a colliding display name cannot make the reuse
+    // lookup hand them a victim's pre-existing token. The label is sanitized.
+    const clientHash = createHash('sha256').update(clientId).digest('hex').slice(0, 8);
+    const tokenName = `MCP: ${safeLabel(client.clientName || host)} [${clientHash}]`;
     const result = await loginAndMintToken(email, password, tokenName);
     if (result.error || !result.token) return void rerender(result.error || 'Could not sign in.');
     normalizedToken = `Token ${result.token}`;
@@ -431,6 +517,7 @@ async function handleAuthorizePost(req: Request, res: Response) {
       redirectUri,
       authorizationCode: code,
       state,
+      nonce: (res.locals as Record<string, unknown>).cspNonce as string,
     }),
   );
 }
