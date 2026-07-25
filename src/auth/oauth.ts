@@ -123,16 +123,22 @@ function safeLabel(s: string | undefined, max = 40): string {
     .trim();
 }
 
+// Confirm a Generect API token is real by asking WHO IT BELONGS TO, not by
+// running a business query. The identity endpoint answers 200/401 purely on the
+// credential, so validation is free (no credits), fast, and independent of
+// whether any particular lead happens to exist. The previous implementation
+// probed /leads/by_link/, which returns 400 "Person does not exist" for a
+// perfectly valid token — that was indistinguishable from a real failure and,
+// failing closed, rejected legitimate users. It also billed a credit per attempt.
 async function validateApiToken(token: string): Promise<{ valid: boolean; error?: string }> {
   try {
     const normalizedToken = token.startsWith('Token ') ? token : `Token ${token}`;
-    const res = await timedFetch(`${GENERECT_API_BASE}/api/linkedin/leads/by_link/`, {
-      method: 'POST',
+    const res = await timedFetch(`${GENERECT_API_BASE}/api/auth/users/me/`, {
+      method: 'GET',
       headers: {
         Authorization: normalizedToken,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ url: 'https://www.linkedin.com/in/satyanadella/' }),
     });
 
     if (res.status === 401 || res.status === 403) {
