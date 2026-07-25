@@ -13,6 +13,9 @@ import {
   createRefreshToken,
   getRefreshToken,
   revokeRefreshToken,
+  createHandoff,
+  peekHandoff,
+  consumeHandoff,
   OAuthClient,
 } from './storage.js';
 import { generateAccessToken, ACCESS_TOKEN_TTL_SECONDS } from './jwt.js';
@@ -36,6 +39,23 @@ const AUTHORIZE_WINDOW_MS = Number(process.env.MCP_AUTHORIZE_RATE_WINDOW_MS || S
 // Additional per-EMAIL cap on password logins, to stop password-spraying that a
 // per-IP limit alone (or a botnet) would miss.
 const LOGIN_EMAIL_MAX = Number(process.env.MCP_LOGIN_EMAIL_MAX || '5');
+
+// Product-UI brokered consent ("you're already logged in → Approve").
+// When MCP_CONSENT_URL is set, /oauth/authorize hands off to that page instead of
+// rendering our own credential form; the page approves with the user's EXISTING
+// session and posts an API token back to /oauth/broker. Unset ⇒ current behaviour.
+const CONSENT_URL = process.env.MCP_CONSENT_URL || '';
+// Only this origin may call /oauth/broker (defence in depth on top of the
+// single-use handoff id). Defaults to the origin of MCP_CONSENT_URL.
+const CONSENT_ORIGIN =
+  process.env.MCP_CONSENT_ORIGIN ||
+  (() => {
+    try {
+      return CONSENT_URL ? new URL(CONSENT_URL).origin : '';
+    } catch {
+      return '';
+    }
+  })();
 
 interface ClientMetadataDocument {
   client_name?: string;
@@ -303,6 +323,8 @@ const wrap =
 
 oauthRouter.get('/authorize', wrap(handleAuthorizeGet));
 oauthRouter.post('/authorize', wrap(handleAuthorizePost));
+oauthRouter.get('/handoff/:id', wrap(handleHandoffInfo));
+oauthRouter.post('/broker', wrap(handleBroker));
 oauthRouter.post('/token', wrap(handleToken));
 oauthRouter.post('/register', wrap(handleRegister));
 oauthRouter.post('/revoke', wrap(handleRevoke));
@@ -396,6 +418,26 @@ async function handleAuthorizeGet(req: Request, res: Response) {
 
   const error = req.query.error as string | undefined;
 
+  // Product-UI consent: hand off to the app the user is already signed in to,
+  // instead of asking for credentials here. All OAuth parameters (redirect target,
+  // PKCE challenge, state) stay server-side in the handoff — the UI only learns an
+  // opaque id, so it can neither change where the code goes nor forge a challenge.
+  if (CONSENT_URL && !error) {
+    const handoff = createHandoff({
+      clientId,
+      clientName: client.clientName,
+      redirectUri,
+      codeChallenge,
+      codeChallengeMethod,
+      scope,
+      state,
+    });
+    const target = new URL(CONSENT_URL);
+    target.searchParams.set('handoff', handoff);
+    res.redirect(302, target.toString());
+    return;
+  }
+
   res.send(
     renderLoginPage({
       clientId,
@@ -409,6 +451,96 @@ async function handleAuthorizeGet(req: Request, res: Response) {
       nonce: (res.locals as Record<string, unknown>).cspNonce as string,
     }),
   );
+}
+
+// Consent-screen metadata for the product UI. Returns ONLY what the user needs to
+// see to make an informed decision — never the PKCE challenge or any secret. Does
+// not consume the handoff (the page may be reloaded).
+async function handleHandoffInfo(req: Request, res: Response) {
+  const h = peekHandoff(String(req.params.id || ''));
+  if (!h) {
+    res.status(404).json({ error: 'invalid_handoff', error_description: 'Unknown or expired authorization request.' });
+    return;
+  }
+  let redirectHost = h.redirectUri;
+  try {
+    redirectHost = new URL(h.redirectUri).host;
+  } catch {
+    /* keep raw */
+  }
+  res.json({
+    client_name: h.clientName,
+    redirect_host: redirectHost,
+    scope: h.scope,
+    expires_at: new Date(h.expiresAt).toISOString(),
+  });
+}
+
+// The product UI approves (or denies) a pending authorization on behalf of the
+// already-signed-in user. On approve it supplies an API token minted with the
+// user's own session; we validate it and mint the OAuth code bound to the
+// ORIGINAL client/redirect/PKCE from the handoff.
+async function handleBroker(req: Request, res: Response) {
+  res.set('Cache-Control', 'no-store');
+
+  // Defence in depth: only the consent UI's origin may call this. The single-use
+  // handoff id is the real control; this blocks casual cross-site posting.
+  const origin = req.headers.origin as string | undefined;
+  if (CONSENT_ORIGIN && origin && origin !== CONSENT_ORIGIN) {
+    res.status(403).json({ error: 'forbidden', error_description: 'Origin not allowed to broker consent.' });
+    return;
+  }
+
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  if (!rateLimitAllow(`broker:${ip}`, AUTHORIZE_MAX, AUTHORIZE_WINDOW_MS)) {
+    res.status(429).json({ error: 'temporarily_unavailable', error_description: 'Too many attempts.' });
+    return;
+  }
+
+  const handoffId = String(req.body.handoff || '');
+  const apiToken = req.body.api_token as string | undefined;
+  const deny = req.body.deny === true || req.body.deny === 'true';
+
+  const h = consumeHandoff(handoffId);
+  if (!h) {
+    res.status(400).json({ error: 'invalid_handoff', error_description: 'Unknown, expired, or already-used request.' });
+    return;
+  }
+
+  // User declined: send them back to the client with a spec-compliant error.
+  if (deny) {
+    const url = new URL(h.redirectUri);
+    url.searchParams.set('error', 'access_denied');
+    if (h.state) url.searchParams.set('state', h.state);
+    res.json({ redirect_url: url.toString() });
+    return;
+  }
+
+  if (!apiToken || !apiToken.trim()) {
+    res.status(400).json({ error: 'invalid_request', error_description: 'api_token is required.' });
+    return;
+  }
+
+  const validation = await validateApiToken(apiToken);
+  if (!validation.valid) {
+    res.status(400).json({ error: 'invalid_token', error_description: validation.error || 'Invalid API token.' });
+    return;
+  }
+
+  const code = createAuthCode({
+    clientId: h.clientId,
+    redirectUri: h.redirectUri,
+    codeChallenge: h.codeChallenge,
+    codeChallengeMethod: h.codeChallengeMethod,
+    apiToken: apiToken.startsWith('Token ') ? apiToken : `Token ${apiToken}`,
+    userId: generateUserId(),
+    scope: h.scope,
+  });
+
+  const url = new URL(h.redirectUri);
+  url.searchParams.set('code', code);
+  if (h.state) url.searchParams.set('state', h.state);
+  res.json({ redirect_url: url.toString() });
 }
 
 async function handleAuthorizePost(req: Request, res: Response) {
