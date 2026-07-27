@@ -18,7 +18,7 @@ import {
   consumeHandoff,
   OAuthClient,
 } from './storage.js';
-import { generateAccessToken, ACCESS_TOKEN_TTL_SECONDS } from './jwt.js';
+import { generateAccessToken, ACCESS_TOKEN_TTL_SECONDS, getOAuthBaseUrl } from './jwt.js';
 import { safeFetchJson } from './ssrf.js';
 import { rateLimitAllow } from './ratelimit.js';
 
@@ -440,6 +440,12 @@ async function handleAuthorizeGet(req: Request, res: Response) {
     });
     const target = new URL(CONSENT_URL);
     target.searchParams.set('handoff', handoff);
+    // Tell the consent page WHICH MCP server to talk back to. Handoffs live in
+    // this process's memory, so a page that guessed the wrong instance (e.g. the
+    // production server while the flow started on a test one) would look the
+    // handoff up somewhere it does not exist and report it as expired. The page
+    // still accepts this value only if it is on its own allow-list.
+    target.searchParams.set('mcp', getOAuthBaseUrl());
     res.redirect(302, target.toString());
     return;
   }
