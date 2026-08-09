@@ -510,3 +510,80 @@ test('every API call identifies itself as the MCP server', async () => {
     assert.equal(call.headers.Authorization, 'Token test-key');
   }
 });
+
+// ---------------------------------------------------------------------------
+// Backwards compatibility with the pre-v1 argument names
+// ---------------------------------------------------------------------------
+
+test('legacy job_title (singular) is still honoured, not silently dropped', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads\/count/, body: { data: { results_count: 5 }, meta: { amount_charged: 0 } } },
+  ]);
+  await tools.count_leads({ job_title: 'CEO', locations: ['Germany'] }, EXTRA);
+  const call = calls.find(c => /count/.test(c.url))!;
+  assert.deepEqual(call.body, { locations: ['Germany'], job_titles: ['CEO'] });
+  assert.ok(!('job_title' in call.body), 'the alias itself is not forwarded');
+});
+
+test('legacy job_title merges into an explicit job_titles list without duplicating', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads/, body: { data: { leads: [] }, meta: { amount_charged: 0 } } },
+  ]);
+  await tools.search_leads({ job_title: 'CEO', job_titles: ['Founder'] }, EXTRA);
+  assert.deepEqual(calls.find(c => /search/.test(c.url))!.body.job_titles, ['Founder', 'CEO']);
+});
+
+test('removed by_icp flags are reported as ignored instead of vanishing', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads\/count/, body: { data: { results_count: 5 }, meta: { amount_charged: 0 } } },
+  ]);
+  const r = out(
+    await tools.count_leads(
+      { job_titles: ['CEO'], without_company: true, get_max_leads: true, lead_industries: ['Banking'] },
+      EXTRA,
+    ),
+  );
+  assert.deepEqual(Object.keys(r.deprecated_params_ignored).sort(), [
+    'get_max_leads',
+    'lead_industries',
+    'without_company',
+  ]);
+  const body = calls.find(c => /count/.test(c.url))!.body;
+  for (const k of ['without_company', 'get_max_leads', 'lead_industries']) {
+    assert.ok(!(k in body), `${k} must not reach the API as a filter`);
+  }
+});
+
+test('a call with no deprecated params carries no deprecation noise', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads\/count/, body: { data: { results_count: 5 }, meta: { amount_charged: 0 } } },
+  ]);
+  const r = out(await tools.count_leads({ job_titles: ['CEO'] }, EXTRA));
+  assert.equal(r.deprecated_params_ignored, undefined);
+});
+
+test('get_lead_by_url still accepts the old profile-section toggles', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /enrich\/database\/lead/, body: { data: LEAD_ROW, meta: { amount_charged: 0.01 } } },
+  ]);
+  const r = out(
+    await tools.get_lead_by_url({ url: 'https://linkedin.com/in/jordan', posts: true, comments: true }, EXTRA),
+  );
+  assert.deepEqual(calls.find(c => /enrich/.test(c.url))!.body, { linkedin_url: 'https://linkedin.com/in/jordan' });
+  assert.deepEqual(Object.keys(r.deprecated_params_ignored).sort(), ['comments', 'posts']);
+});
+
+test('search_companies reports the removed fallback_from_leads flag', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/companies/, body: { data: { companies: [] }, meta: { amount_charged: 0 } } },
+  ]);
+  const r = out(await tools.search_companies({ industries: ['Software Development'], fallback_from_leads: true }, EXTRA));
+  assert.deepEqual(Object.keys(r.deprecated_params_ignored), ['fallback_from_leads']);
+  assert.ok(!('fallback_from_leads' in calls.find(c => /search/.test(c.url))!.body));
+});

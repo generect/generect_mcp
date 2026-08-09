@@ -291,10 +291,80 @@ async function callWithMode(
 }
 
 // ---------------------------------------------------------------------------
+// Backwards compatibility with the pre-v1 tool surface
+// ---------------------------------------------------------------------------
+// The old tools took `job_title` (singular) and several by_icp-only flags that
+// have no v1 equivalent. The MCP SDK validates arguments against the declared
+// shape and **silently strips anything not declared** — so if we simply dropped
+// these names, an existing caller asking for `job_title: "CEO"` would get a
+// search with no title filter at all: a much broader, more expensive query than
+// they asked for, with no error. That is the exact failure this release exists
+// to prevent, so the removed names stay declared and are handled explicitly.
+const LEGACY_NOTES: Record<string, string> = {
+  exclude_title_keywords:
+    'No v1 equivalent. Narrow job_titles instead, or filter the returned rows yourself.',
+  without_company: 'No longer needed — v1 filter-only search is the default when no company anchor is set.',
+  get_max_leads: 'Always on now: search responses include results_count without asking.',
+  get_max_companies: 'Always on now: search responses include results_count without asking.',
+  fallback_from_leads: 'Removed. It fabricated lead-derived name aggregates and cost an extra billable query.',
+  lead_industries:
+    "Removed: v1 filters on the employer's industry. Use company_industries.",
+  comments: 'Removed: v1 enrich returns the full profile without per-section toggles.',
+  posts: 'Removed: v1 enrich returns the full profile without per-section toggles.',
+  people_also_viewed: 'Removed: v1 enrich returns the full profile without per-section toggles.',
+  inexact_company: 'Removed: v1 enrich matches on the identifier you pass.',
+};
+
+const legacyFlag = (name: string) =>
+  z.any().describe(`DEPRECATED — accepted but ignored. ${LEGACY_NOTES[name]}`).optional();
+
+const LEGACY_LEAD_SHAPE = {
+  job_title: z
+    .string()
+    .describe('DEPRECATED alias for job_titles. Still honoured: it is merged into job_titles.')
+    .optional(),
+  exclude_title_keywords: legacyFlag('exclude_title_keywords'),
+  without_company: legacyFlag('without_company'),
+  get_max_leads: legacyFlag('get_max_leads'),
+  lead_industries: legacyFlag('lead_industries'),
+};
+
+const LEGACY_COMPANY_SHAPE = {
+  get_max_companies: legacyFlag('get_max_companies'),
+  fallback_from_leads: legacyFlag('fallback_from_leads'),
+};
+
+const LEGACY_ENRICH_SHAPE = {
+  comments: legacyFlag('comments'),
+  posts: legacyFlag('posts'),
+  people_also_viewed: legacyFlag('people_also_viewed'),
+  inexact_company: legacyFlag('inexact_company'),
+};
+
+/** Which deprecated names the caller actually sent, so the response can say so. */
+function legacyUsed(args: any): Record<string, string> | undefined {
+  const used: Record<string, string> = {};
+  for (const name of Object.keys(LEGACY_NOTES)) {
+    if (args?.[name] !== undefined) used[name] = LEGACY_NOTES[name];
+  }
+  return Object.keys(used).length > 0 ? used : undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Request shaping
 // ---------------------------------------------------------------------------
 // MCP-internal control flags must not reach the API as if they were filters.
-const CONTROL_FIELDS = ['compact', 'timeout_ms', 'mode', 'limit', 'offset', 'company_filters', 'include_prices'];
+const CONTROL_FIELDS = [
+  'compact',
+  'timeout_ms',
+  'mode',
+  'limit',
+  'offset',
+  'company_filters',
+  'include_prices',
+  'job_title',
+  ...Object.keys(LEGACY_NOTES),
+];
 
 function toFilters(args: any): Record<string, unknown> {
   const filters: Record<string, unknown> = {};
@@ -304,6 +374,11 @@ function toFilters(args: any): Record<string, unknown> {
   }
   if (args?.limit != null && filters.limit_by == null) filters.limit_by = args.limit;
   if (args?.offset != null && filters.offset_by == null) filters.offset_by = args.offset;
+  // Honour the old singular form rather than dropping the caller's only real filter.
+  if (typeof args?.job_title === 'string' && args.job_title.trim()) {
+    const titles = Array.isArray(filters.job_titles) ? (filters.job_titles as string[]) : [];
+    if (!titles.includes(args.job_title)) filters.job_titles = [...titles, args.job_title];
+  }
   return filters;
 }
 
@@ -607,6 +682,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     `How many leads match an ICP, and what pulling them would cost. ${priceTag('count_database')} ALWAYS CALL THIS BEFORE search_leads: it is the only way to learn the size of an audience without paying per row, and it returns a cost estimate for the next step at this account's real rates. A realtime count is NOT free ($0.02 flat) — this tool refuses to run one unless you pass mode:"realtime" on purpose.`,
     {
       ...LEAD_FILTERS,
+      ...LEGACY_LEAD_SHAPE,
       company_filters: z
         .object(COMPANY_FILTERS)
         .partial()
@@ -643,6 +719,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           return result({
             results_count: data?.data?.results_count ?? data?.data?.count ?? null,
             mode: 'realtime',
+            deprecated_params_ignored: legacyUsed(args),
             cost: receipt('count_realtime', data),
             next_step_estimate: estimateBlock(book, 'realtime', data?.data?.results_count),
           });
@@ -662,6 +739,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           return result({
             results_count: count,
             mode: 'database',
+            deprecated_params_ignored: legacyUsed(args),
             cost: receipt('count_database', data),
             next_step_estimate: estimateBlock(book, 'database', count),
             ...(count === 0
@@ -702,6 +780,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     `How many companies match an ICP, and what pulling them would cost. ${priceTag('count_database')} Call this before search_companies. As with count_leads, a realtime count costs $0.02 and is never run implicitly.`,
     {
       ...COMPANY_FILTERS,
+      ...LEGACY_COMPANY_SHAPE,
       mode: modeParam('you only need a size estimate'),
       timeout_ms: PAGING.timeout_ms,
     },
@@ -725,6 +804,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           return result({
             results_count: data?.data?.results_count ?? null,
             mode: 'realtime',
+            deprecated_params_ignored: legacyUsed(args),
             cost: receipt('count_realtime', data),
             next_step_estimate: estimateBlock(book, 'realtime', data?.data?.results_count),
           });
@@ -836,6 +916,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     `Return leads (people) matching an ICP. ${priceTag('search_database')} Run count_leads first — it is free and tells you both the audience size and what this call will cost. Returns profile data only: no email or phone. Use generate_email / find_phone on the ids you actually want. Ordering is not stable, so paginate by passing ids you already have in exclude_ids rather than by offset.`,
     {
       ...LEAD_FILTERS,
+      ...LEGACY_LEAD_SHAPE,
       company_filters: z
         .object(COMPANY_FILTERS)
         .partial()
@@ -875,6 +956,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           results_count: data?.data?.results_count ?? null,
           requested_rows: rows,
           mode,
+          deprecated_params_ignored: legacyUsed(args),
           ...(escalated_because
             ? {
                 escalated_to_realtime_because: escalated_because,
@@ -898,6 +980,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     `Return companies matching an ICP. ${priceTag('search_database')} Run count_companies first. Note that headcount_range is a snapshot taken when the record was indexed and can lag the company's current size; the filter itself is applied at query time.`,
     {
       ...COMPANY_FILTERS,
+      ...LEGACY_COMPANY_SHAPE,
       mode: modeParam('freshness is not critical'),
       compact: compactParam('company'),
       ...PAGING,
@@ -923,6 +1006,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           results_count: data?.data?.results_count ?? null,
           requested_rows: rows,
           mode,
+          deprecated_params_ignored: legacyUsed(args),
           ...(escalated_because
             ? {
                 escalated_to_realtime_because: escalated_because,
@@ -945,6 +1029,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     `Cheap look at the actual people behind a count, before committing to a full search. ${priceTag('preview')} Preview rows carry a Generect \`id\`, so the intended flow is: preview many → pick the few that fit → enrich_lead / generate_email only on those. Per the API contract preview rows are masked (no LinkedIn URL, domain, email or phone); if your account returns more than that, treat it as a bonus and not something to rely on.`,
     {
       ...LEAD_FILTERS,
+      ...LEGACY_LEAD_SHAPE,
       company_filters: z
         .object(COMPANY_FILTERS)
         .partial()
@@ -982,6 +1067,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         return result({
           returned: Array.isArray(trimmed) ? trimmed.length : 0,
           requested_rows: rows,
+          deprecated_params_ignored: legacyUsed(args),
           ...(Array.isArray(leads) && leads.length > rows
             ? { api_returned_more_than_requested: leads.length, note: 'Extra rows were trimmed locally.' }
             : {}),
@@ -1092,6 +1178,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     `Alias of enrich_lead for a LinkedIn profile URL, kept for backwards compatibility. ${priceTag('enrich_database')} Prefer enrich_lead — it also accepts a Generect id (cheaper to get right) or an email for reverse lookup.`,
     {
       url: z.string().describe('LinkedIn profile URL (e.g. https://www.linkedin.com/in/username/).'),
+      ...LEGACY_ENRICH_SHAPE,
       mode: modeParam('a recent cached record is good enough'),
       compact: compactParam('lead'),
       timeout_ms: PAGING.timeout_ms,
@@ -1112,6 +1199,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         return result({
           found: !!lead,
           mode,
+          deprecated_params_ignored: legacyUsed(args),
           cost: receipt(mode === 'database' ? 'enrich_database' : 'enrich_realtime', data),
           lead: lead && args?.compact !== false ? compactLead(lead) : lead,
         });
