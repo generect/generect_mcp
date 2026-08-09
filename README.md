@@ -183,6 +183,19 @@ count_leads (free)  →  preview_leads (cheap)  →  search_leads (per row)
 
 `get_balance` before and after a batch gives you an exact spend figure to report.
 
+### Agent skill
+
+Tools give an agent the ability to call Generect; a skill gives it the procedure.
+`skills/generect-lead-workflows` documents the flows above so an autonomous agent
+follows them without being told each time:
+
+```bash
+npx skills add generect/generect_mcp --skill generect-lead-workflows
+```
+
+See [skills/README.md](skills/README.md). Release process and the full list of
+places a version has to land: [RELEASING.md](RELEASING.md).
+
 ### Cursor integration (settings.json excerpt)
 
 ```json

@@ -1,0 +1,67 @@
+name: Publish to npm
+
+# The docs tell people to run `npx generect-ultimate-mcp@latest`, so whatever npm
+# serves IS the local install for every user. Between Aug 2025 and this workflow
+# it served 0.1.0 while the repo moved to 0.7.0 — a build with no row cap and a
+# billable health check. Publishing has to be automatic, not something one person
+# remembers to do.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Check publish token is configured
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::Secret NPM_TOKEN is not set. Create an automation token on an npm"
+            echo "account that owns the package and store it as NPM_TOKEN."
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run check-version
+      - run: npm test
+      - run: npm run build
+
+      - name: Refuse to publish a version that is already on npm
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          NAME=$(node -p "require('./package.json').name")
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::$NAME@$VERSION is already published. Bump package.json and server.json."
+            exit 1
+          fi
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: Verify npm now serves this version as latest
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          NAME=$(node -p "require('./package.json').name")
+          for i in 1 2 3 4 5; do
+            LATEST=$(npm view "$NAME" dist-tags.latest 2>/dev/null || echo none)
+            [ "$LATEST" = "$VERSION" ] && echo "npm latest = $VERSION" && exit 0
+            sleep 10
+          done
+          echo "::error::npm still serves $LATEST, expected $VERSION"
+          exit 1
