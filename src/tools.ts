@@ -418,7 +418,12 @@ const LEAD_FILTERS = {
   company_name: z.string().describe('Anchor to one company by name (exclusive with company_link/company_id).').optional(),
   company_link: z.string().describe('Anchor to one company by LinkedIn URL.').optional(),
   company_id: z.union([z.string(), z.number()]).describe('Anchor to one company by LinkedIn numeric id.').optional(),
-  exclude_names: z.array(z.string()).describe('Skip leads by full name.').optional(),
+  exclude_names: z
+    .array(z.string())
+    .describe(
+      'Skip leads by full name. KNOWN ISSUE: in database mode any non-empty value collapses the result set to 0 (verified 2026-08-09); it behaves correctly in realtime mode. Prefer exclude_ids, or filter names out yourself after the search.',
+    )
+    .optional(),
   exclude_ids: z
     .array(z.union([z.string(), z.number()]))
     .describe(
