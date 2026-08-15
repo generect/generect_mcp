@@ -275,8 +275,9 @@ npm run mcp:client -- <api-key>
 - **Token encryption** uses AES-256-GCM with a key from `TOKEN_ENCRYPTION_KEY` (or derived from `JWT_SIGNING_KEY`)
 - **Fail-closed secrets** — in production the server refuses to start with a missing or well-known-default `JWT_SIGNING_KEY`, and never publishes symmetric key material in the JWKS
 - **Bounded, refreshable tokens** — access tokens expire (default 30 days, `ACCESS_TOKEN_TTL_SECONDS`) and are renewed via a `refresh_token` grant; refresh tokens are rotated on use and revocable at `POST /oauth/revoke` (RFC 7009). Tokens issued before this change remain valid (no forced re-auth)
-- **PKCE** is required for all authorization code flows (S256 method)
+- **PKCE** is required for all authorization code flows (S256 method), and re-checked on the consent POST as well as the initial redirect — a code intercepted by a rogue app that claims the same URI scheme is useless without the verifier
 - **Dynamic Client Registration** allows any MCP client to self-register, but is now **rate-limited per IP** (`MCP_REGISTER_RATE_MAX`, default 60/hour) and the client store is **capped** (`MCP_MAX_CLIENTS`, default 5000, LRU eviction that never drops an in-use client)
+- **Redirect URIs: open by default, so any client can connect** (`MCP_REDIRECT_POLICY=open`). Accepted: any `https` URL, `http` only on loopback/private addresses, and an app's own private-use URI scheme (`cursor://…`, `vscode://…`, `com.example.app:/cb` — RFC 8252 §7.1). Refused regardless of policy: cleartext `http` to a public host, `#fragments`, embedded credentials, over-long URIs, and browser-executable schemes (`javascript:`, `data:`, `file:`, …) — that URI is navigated to from our own origin, so those would be XSS. Loopback callbacks match on everything but the port (RFC 8252 §7.3), since a native app's listener gets an ephemeral one. Set `MCP_REDIRECT_POLICY=strict` to fall back to the first-party allowlist (`*.generect.com`, `claude.ai`, `linear.app`, plus `MCP_ALLOWED_REDIRECT_DOMAINS` / `MCP_ALLOWED_REDIRECT_SCHEMES`)
 - **SSRF-guarded metadata fetches** — the client-id-metadata-document flow (`MCP_ENABLE_CIMD`, default on) fetches only `https` URLs that resolve exclusively to public IPs, with no redirect following, a hard timeout, and a response-size cap (blocks loopback / RFC1918 / link-local / cloud-metadata targets)
 - **Token validation fails closed** — if Generect cannot confirm a token during login (upstream error), the server declines to mint an access token instead of assuming validity
 - **Audience + algorithm pinning** ensures tokens are only used with this MCP server and only via the expected signing algorithm
@@ -291,5 +292,8 @@ npm run mcp:client -- <api-key>
 | `MCP_REGISTER_RATE_MAX` | `60` | Max `/oauth/register` calls per IP per window |
 | `MCP_REGISTER_RATE_WINDOW_MS` | `3600000` (1h) | Rate-limit window |
 | `MCP_ENABLE_CIMD` | `true` | Allow client-id-as-metadata-URL (SSRF-guarded) |
-| `MCP_ALLOWED_REDIRECT_DOMAINS` | — | Extra allowed redirect hostnames (comma-separated) |
+| `MCP_REDIRECT_POLICY` | `open` | `open` = any client may register its callback; `strict` = first-party allowlist only |
+| `MCP_ALLOWED_REDIRECT_DOMAINS` | — | Extra allowed redirect hostnames, `strict` only (comma-separated) |
+| `MCP_ALLOWED_REDIRECT_SCHEMES` | — | Extra allowed private-use URI schemes, `strict` only (comma-separated, e.g. `cursor,vscode`) |
+| `MCP_ALLOW_ANY_HTTPS_REDIRECT` | — | Legacy: opens https callbacks under `strict` (implied by `open`) |
 - **Log privacy** — prospect payloads are redacted from logs by default (`MCP_LOG_PAYLOADS=1` to opt in)

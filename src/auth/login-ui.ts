@@ -1,3 +1,5 @@
+import { describeRedirectTarget } from './redirect.js';
+
 export function renderLoginPage(params: {
   clientId: string;
   redirectUri: string;
@@ -209,16 +211,14 @@ export function renderLoginPage(params: {
       ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
 
       ${(() => {
-        // Show the user WHERE their authorization will be delivered. If a
-        // malicious app tricked them onto this page, the destination host is the
-        // tell — a Generect connection should go to a client they recognize.
-        let host = '';
-        try {
-          host = new URL(redirectUri).host;
-        } catch {
-          host = redirectUri;
-        }
-        return `<div style="margin:0 0 16px;padding:10px 12px;border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;font-size:13px;color:#444;">Your access will be sent to <strong>${escapeHtml(host)}</strong>. Only continue if you started this connection there.</div>`;
+        // Show the user WHERE their authorization will be delivered. Any app may
+        // register itself with this server, so this line — not a host allowlist —
+        // is what stands between the user and approving a flow they did not
+        // start. It has to stay readable for every callback shape, including
+        // private-use schemes that have no hostname.
+        const target = describeRedirectTarget(redirectUri);
+        const what = target.detail ? ` (${escapeHtml(target.detail)})` : '';
+        return `<div style="margin:0 0 16px;padding:10px 12px;border:1px solid #e0e0e0;border-radius:8px;background:#fafafa;font-size:13px;color:#444;">Your access will be sent to <strong>${escapeHtml(target.label)}</strong>${what}. Only continue if you started this connection there.</div>`;
       })()}
 
       <form method="POST" action="/oauth/authorize" id="authForm">
@@ -363,6 +363,12 @@ export function renderRedirectPage(params: {
   if (state) finalRedirectUrl.searchParams.set('state', state);
 
   const redirectUrlString = finalRedirectUrl.toString();
+  // Handing off to a locally installed app (cursor://, vscode://, …) is a
+  // different experience from a web callback: browsers often refuse to open an
+  // external protocol without a user gesture, or raise an "Open in …?" prompt.
+  // Waiting 3s before offering the button reads as a hang, so for those the
+  // button is there from the start.
+  const isExternalApp = !/^https?:$/.test(finalRedirectUrl.protocol);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -442,20 +448,23 @@ export function renderRedirectPage(params: {
   <div class="container">
     <div class="icon">&#9989;</div>
     <h1>Authorization Successful</h1>
-    <p>Redirecting you back to the application...</p>
-    <div class="spinner" id="spinner"></div>
-    <a href="${escapeHtml(redirectUrlString)}" class="manual-link hidden" id="manualLink">
-      Click here to continue
+    <p>${isExternalApp ? 'Opening the application to finish signing in...' : 'Redirecting you back to the application...'}</p>
+    ${isExternalApp ? '' : '<div class="spinner" id="spinner"></div>'}
+    <a href="${escapeHtml(redirectUrlString)}" class="manual-link${isExternalApp ? '' : ' hidden'}" id="manualLink">
+      ${isExternalApp ? 'Open the application' : 'Click here to continue'}
     </a>
   </div>
   <script nonce="${nonce || ''}">
     // Attempt immediate redirect. JSON.stringify produces a safe JS string
     // literal; the URL is already percent-encoded by the WHATWG serializer.
     const redirectUrl = ${JSON.stringify(redirectUrlString)};
+    const isExternalApp = ${isExternalApp ? 'true' : 'false'};
 
     // Small delay to ensure page is fully loaded
     setTimeout(function() {
       window.location.href = redirectUrl;
+
+      if (isExternalApp) return;
 
       // Show manual link after a short delay in case automatic redirect doesn't work
       setTimeout(function() {
