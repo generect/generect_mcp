@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken, extractApiToken, GenerectJwtPayload } from './jwt.js';
+import { toApiKey } from './credential.js';
 import { parseAuthHeader } from './parse.js';
 import { generateWwwAuthenticateHeader } from './prm.js';
 
@@ -33,7 +34,7 @@ export async function requireBearerAuth(req: AuthenticatedRequest, res: Response
   }
 
   if (parsed.kind === 'token') {
-    req.apiToken = parsed.apiKey;
+    req.apiToken = toApiKey(parsed.apiKey);
     req.isAuthenticated = true;
     next();
     return;
@@ -46,7 +47,7 @@ export async function requireBearerAuth(req: AuthenticatedRequest, res: Response
   }
 
   try {
-    req.apiToken = extractApiToken(payload);
+    req.apiToken = toApiKey(extractApiToken(payload));
     req.jwtPayload = payload;
     req.isAuthenticated = true;
     next();

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
 import { parseAuthHeader } from './auth/parse.js';
+import { toAuthHeader } from './auth/credential.js';
 import { VERSION } from './version.js';
 import { fetchPriceBook, priceTag, receipt, estimate, round, type Operation, type PriceBook } from './pricing.js';
 
@@ -652,18 +653,20 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       if (!fallback) {
         throw new Error('Authorization header is required');
       }
-      return fallback.startsWith('Token ') ? fallback : `Token ${fallback}`;
+      return toAuthHeader(fallback);
     }
 
     if (parsed.kind === 'token') {
-      return `Token ${parsed.apiKey}`;
+      return toAuthHeader(parsed.apiKey);
     }
 
     const payload = await verifyAccessToken(parsed.jwt);
     if (!payload) {
       throw new Error('Invalid or expired access token');
     }
-    return `Token ${extractApiToken(payload)}`;
+    // extractApiToken may return either shape: tokens minted before the
+    // canonical form was fixed carry the `Token ` prefix inside the JWT.
+    return toAuthHeader(extractApiToken(payload));
   }
   const defaultTimeoutMs = Number(process.env.GENERECT_TIMEOUT_MS || '300000');
   const timeoutOf = (args: any) => Number(args?.timeout_ms ?? defaultTimeoutMs);

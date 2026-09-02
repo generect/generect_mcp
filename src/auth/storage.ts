@@ -35,7 +35,8 @@ export interface RefreshToken {
   token: string;
   clientId: string;
   userId: string;
-  apiToken: string; // normalized "Token <x>" — the credential the access token proxies
+  apiToken: string; // the BARE Generect API key — see auth/credential.ts; the
+  // `Token ` prefix is added only when an outbound request is built
   scope: string;
   expiresAt: number;
   revoked: boolean;

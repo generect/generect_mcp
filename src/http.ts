@@ -6,6 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools } from './tools.js';
+import { toAuthHeader } from './auth/credential.js';
 import { VERSION, SERVER_NAME } from './version.js';
 import {
   handleProtectedResourceMetadata,
@@ -20,7 +21,7 @@ import {
 
 const apiBase = process.env.GENERECT_API_BASE || 'https://api.generect.com';
 const rawApiKey = process.env.GENERECT_API_KEY || '';
-const apiKey = rawApiKey && rawApiKey.startsWith('Token ') ? rawApiKey : rawApiKey ? `Token ${rawApiKey}` : '';
+const apiKey = toAuthHeader(rawApiKey);
 
 // Safety net: an unhandled rejection in an async route handler (e.g. a malformed
 // request) must NOT take down the whole process — that would drop every in-memory

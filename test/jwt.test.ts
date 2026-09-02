@@ -24,6 +24,10 @@ test('HS256: sign -> verify round-trips and carries the encrypted api token', as
   assert.equal(payload.sub, 'user-1');
   assert.equal(payload.scope, 'generect:api');
   assert.equal(payload.client_id, 'client-1');
+  // Round-trip fidelity only: extractApiToken returns whatever was minted in,
+  // prefix and all. Do not read this as "the stored form is a header value" —
+  // that reading is what produced `Token Token <key>` on the wire for months.
+  // The shape that actually goes out is asserted in credential.test.ts.
   assert.equal(jwt.extractApiToken(payload), 'Token real-api-key');
 });
 
