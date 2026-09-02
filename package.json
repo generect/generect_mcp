@@ -1,6 +1,6 @@
 {
   "name": "generect-ultimate-mcp",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "type": "module",
   "description": "B2B lead and company data for AI agents: free audience sizing, cheap preview, search, enrich, email finder and validation, phone lookup and bulk jobs over the Generect API.",
   "license": "MIT",

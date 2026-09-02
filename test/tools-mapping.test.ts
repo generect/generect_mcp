@@ -587,3 +587,117 @@ test('search_companies reports the removed fallback_from_leads flag', async () =
   assert.deepEqual(Object.keys(r.deprecated_params_ignored), ['fallback_from_leads']);
   assert.ok(!('fallback_from_leads' in calls.find(c => /search/.test(c.url))!.body));
 });
+
+// ---------------------------------------------------------------------------
+// resolve_profile — reveal who is behind an obfuscated /in/ACwAA… link
+// ---------------------------------------------------------------------------
+
+const RESOLVED = {
+  first_name: 'Oleg',
+  middle_name: '',
+  last_name: 'Zaremba',
+  full_name: 'Oleg Zaremba',
+  unformatted_full_name: 'Oleg Zaremba',
+  sales_id: 'ACoAAA0pmqQBAI1iA7ykCT0a',
+  id: 'ACoAAA0pmqQBAI1iA7ykCT0a',
+  public_identifier: 'oleg-zaremba',
+  linkedin_url: 'https://www.linkedin.com/in/oleg-zaremba',
+  linkedin_id: '220830372',
+  headline: 'CTO & Co-founder',
+  profile_photo: 'https://media.licdn.com/dms/image/photo?e=1789603200',
+  background_photo: 'https://media.licdn.com/dms/image/bg?e=1789603200',
+  is_memorialized: false,
+  input: 'https://www.linkedin.com/in/ACwAAA0pmqQBms',
+};
+
+const RESOLVE_ONE: Route = {
+  match: /\/profile\/resolve\/$/,
+  body: { data: RESOLVED, meta: { amount_charged: 0.0005 } },
+};
+
+test('resolve_profile: posts the reference to the single endpoint and reports the API charge', async () => {
+  const { tools, calls } = harness([TIER_ROUTE, RESOLVE_ONE]);
+  const r = out(await tools.resolve_profile({ url: 'https://www.linkedin.com/in/ACwAAA0pmqQBms' }, EXTRA));
+  const call = calls.find(c => /profile\/resolve/.test(c.url))!;
+  assert.equal(call.url, 'https://api.test/api/v1/profile/resolve/');
+  assert.deepEqual(call.body, { linkedin_url: 'https://www.linkedin.com/in/ACwAAA0pmqQBms' });
+  assert.equal(r.found, true);
+  assert.equal(r.profile.linkedin_url, 'https://www.linkedin.com/in/oleg-zaremba');
+  assert.equal(r.profile.linkedin_id, '220830372');
+  assert.equal(r.cost.amount_charged_usd, 0.0005);
+  assert.equal(r.cost.operation, 'profile_resolve');
+});
+
+test('resolve_profile: `id` is an alias for `url`, not a separate field the API sees', async () => {
+  const { tools, calls } = harness([TIER_ROUTE, RESOLVE_ONE]);
+  await tools.resolve_profile({ id: 'oleg-zaremba' }, EXTRA);
+  const call = calls.find(c => /profile\/resolve/.test(c.url))!;
+  assert.deepEqual(call.body, { linkedin_url: 'oleg-zaremba' });
+});
+
+test('resolve_profile: compact drops the expiring photo URLs; compact false keeps the raw record', async () => {
+  const { tools } = harness([TIER_ROUTE, RESOLVE_ONE]);
+  const compact = out(await tools.resolve_profile({ url: 'x' }, EXTRA));
+  assert.ok(!('profile_photo' in compact.profile), 'signed photo URLs expire — not worth the tokens by default');
+  assert.ok(!('sales_id' in compact.profile), 'duplicate of id');
+
+  const { tools: tools2 } = harness([TIER_ROUTE, RESOLVE_ONE]);
+  const raw = out(await tools2.resolve_profile({ url: 'x', compact: false }, EXTRA));
+  assert.equal(raw.profile.profile_photo, RESOLVED.profile_photo);
+});
+
+test('resolve_profile: a batch goes to the bulk endpoint and keeps error rows in place', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    {
+      match: /\/profile\/resolve\/bulk\//,
+      body: {
+        data: [RESOLVED, { input: 'not a linkedin reference', error: 'Not a LinkedIn profile URL or id.' }],
+        meta: { total: 2, resolved: 1, amount_charged: 0.0005 },
+      },
+    },
+  ]);
+  const r = out(
+    await tools.resolve_profile(
+      { profiles: ['https://www.linkedin.com/in/ACwAAA0pmqQBms', 'not a linkedin reference'] },
+      EXTRA,
+    ),
+  );
+  const call = calls.find(c => /bulk/.test(c.url))!;
+  assert.equal(call.url, 'https://api.test/api/v1/profile/resolve/bulk/');
+  assert.deepEqual(call.body, { profiles: ['https://www.linkedin.com/in/ACwAAA0pmqQBms', 'not a linkedin reference'] });
+  // Counts come from the API, because `resolved` is exactly what was billed.
+  assert.equal(r.total, 2);
+  assert.equal(r.resolved, 1);
+  assert.equal(r.cost.amount_charged_usd, 0.0005);
+  assert.equal(r.profiles.length, 2);
+  assert.equal(r.profiles[0].public_identifier, 'oleg-zaremba');
+  assert.deepEqual(r.profiles[1], { input: 'not a linkedin reference', error: 'Not a LinkedIn profile URL or id.' });
+});
+
+test('resolve_profile: with no reference at all it asks, without spending a request', async () => {
+  const { tools, calls } = harness([TIER_ROUTE, RESOLVE_ONE]);
+  const r = await tools.resolve_profile({}, EXTRA);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /profiles/);
+  assert.ok(!calls.some(c => /profile\/resolve/.test(c.url)), 'must not call the API without a reference');
+});
+
+test('resolve_profile: an empty batch is not silently sent as a batch', async () => {
+  const { tools, calls } = harness([TIER_ROUTE, RESOLVE_ONE]);
+  const r = await tools.resolve_profile({ profiles: [] }, EXTRA);
+  assert.equal(r.isError, true);
+  assert.ok(!calls.some(c => /bulk/.test(c.url)));
+});
+
+test('resolve_profile: the price survives a tier that does not list this service type', async () => {
+  // The backend seeds no ServicePrice row for api_profile_resolve, so the tier
+  // endpoint has no field for it — the list price must still be the real one.
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /\/profile\/resolve\/$/, body: { data: RESOLVED, meta: { amount_charged: 0.0005 } } },
+  ]);
+  const r = out(await tools.resolve_profile({ url: 'x' }, EXTRA));
+  assert.equal(r.cost.amount_charged_usd, 0.0005, 'the receipt always quotes the biller, never our arithmetic');
+  assert.match(r.cost.billed, /per RESOLVED profile/);
+});
