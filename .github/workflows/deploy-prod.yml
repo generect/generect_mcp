@@ -15,6 +15,10 @@ on:
         default: "latest"
         type: string
 
+# Least privilege: this job only reads the checkout and talks to the host.
+permissions:
+  contents: read
+
 jobs:
   deploy-mcp:
     runs-on: chronos
