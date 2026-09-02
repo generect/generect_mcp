@@ -22,6 +22,7 @@ import { isValidRedirectUri, redirectPolicyHint, describeRedirectTarget, MAX_RED
 import { generateAccessToken, ACCESS_TOKEN_TTL_SECONDS, getOAuthBaseUrl } from './jwt.js';
 import { safeFetchJson } from './ssrf.js';
 import { rateLimitAllow } from './ratelimit.js';
+import { toApiKey, toAuthHeader } from './credential.js';
 
 // Client-ID-Metadata-Document support (client_id is an https URL). Kept enabled
 // by default for compatibility with clients that use it, but the fetch is now
@@ -133,7 +134,7 @@ function safeLabel(s: string | undefined, max = 40): string {
 // failing closed, rejected legitimate users. It also billed a credit per attempt.
 async function validateApiToken(token: string): Promise<{ valid: boolean; error?: string }> {
   try {
-    const normalizedToken = token.startsWith('Token ') ? token : `Token ${token}`;
+    const normalizedToken = toAuthHeader(token);
     const res = await timedFetch(`${GENERECT_API_BASE}/api/auth/users/me/`, {
       method: 'GET',
       headers: {
@@ -546,7 +547,7 @@ async function handleBroker(req: Request, res: Response) {
     redirectUri: h.redirectUri,
     codeChallenge: h.codeChallenge,
     codeChallengeMethod: h.codeChallengeMethod,
-    apiToken: apiToken.startsWith('Token ') ? apiToken : `Token ${apiToken}`,
+    apiToken: toApiKey(apiToken),
     userId: generateUserId(),
     scope: h.scope,
   });
@@ -638,7 +639,7 @@ async function handleAuthorizePost(req: Request, res: Response) {
   if (apiToken && apiToken.trim()) {
     const validation = await validateApiToken(apiToken);
     if (!validation.valid) return void rerender(validation.error || 'Invalid API token');
-    normalizedToken = apiToken.startsWith('Token ') ? apiToken : `Token ${apiToken}`;
+    normalizedToken = toApiKey(apiToken);
   } else if (email && password) {
     // Second rate-limit key on the EMAIL, so per-IP limiting can't be sidestepped
     // by spraying one password across many accounts (each attempt is a real login
@@ -656,7 +657,7 @@ async function handleAuthorizePost(req: Request, res: Response) {
     const tokenName = `MCP: ${safeLabel(client.clientName || host)} [${clientHash}]`;
     const result = await loginAndMintToken(email, password, tokenName);
     if (result.error || !result.token) return void rerender(result.error || 'Could not sign in.');
-    normalizedToken = `Token ${result.token}`;
+    normalizedToken = toApiKey(result.token);
   } else {
     return void rerender('Enter your email and password, or an API token.');
   }
