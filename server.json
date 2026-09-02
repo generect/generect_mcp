@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "com.generect/generect-mcp",
-  "description": "B2B lead generation and company search through Generect Live API for sales prospecting.",
-  "version": "0.6.2",
+  "description": "B2B lead and company data for AI agents: free audience sizing, cheap preview, search, enrich, email finder and validation, phone lookup and bulk jobs over the Generect API.",
+  "version": "0.7.0",
   "repository": {
     "url": "https://github.com/generect/generect_mcp.git",
     "source": "github"

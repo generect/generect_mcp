@@ -1,6 +1,11 @@
-## Generect Live API MCP Server
+## Generect API MCP Server
 
-Minimal MCP server exposing Generect Live API tools for B2B lead generation and company search.
+B2B lead and company data for AI agents — search, preview, enrich, email and phone
+lookup over the Generect API.
+
+Built so an agent can work without burning a customer's balance: sizing an
+audience is **free**, every tool says up front whether it costs money, and every
+response reports what was actually charged.
 
 ### Get Your API Key
 
@@ -125,11 +130,71 @@ grep tool_call ~/.pm2/logs/generect-mcp-out.log      # only LLM tool inputs
 
 ### Tools
 
-- `search_leads`: Search for leads by ICP filters (supports `timeout_ms`)
-- `search_companies`: Search for companies by ICP filters (supports `timeout_ms`)
-- `generate_email`: Generate email by first/last name and domain (supports `timeout_ms`)
-- `get_lead_by_url`: Get LinkedIn lead by profile URL (supports `timeout_ms`)
-- `health`: Quick health check against the API (optional `url`, supports `timeout_ms`)
+Every tool states in its own description whether it is free or billable, and every
+response carries a `cost` block with the amount the API actually charged. Tools
+accept `timeout_ms`.
+
+**Free — start here**
+
+| Tool | What it does |
+|------|--------------|
+| `count_leads` | How many leads match an ICP + what the next step costs at *your* rates. Run before `search_leads`. |
+| `count_companies` | Same, for companies. |
+| `get_balance` | Balance, month-to-date usage, and this account's real per-operation prices. |
+| `get_bulk_job` | Poll a bulk job (the work was billed at submit time). |
+| `manage_webhooks` | List/create/update/delete/test webhook endpoints. |
+| `health` | Liveness + credential check against a free endpoint. Safe for monitors. |
+
+**Billable**
+
+| Tool | Billed |
+|------|--------|
+| `search_leads` | per returned row |
+| `search_companies` | per returned row |
+| `preview_leads` | per returned row (cheapest way to see real people) |
+| `enrich_lead` / `get_lead_by_url` | per record found |
+| `enrich_company` | per record found |
+| `generate_email` | per **valid** email found |
+| `validate_email` | per email submitted — every address, whatever the verdict |
+| `find_phone` | per phone found — the most expensive operation here |
+| `start_bulk_job` | per record, **reserved at submit time** |
+
+#### database vs realtime
+
+Every search/enrich runs against either the cached database (sub-second, cheaper,
+**free counts**) or a live LinkedIn lookup (5–60s, pricier, billable counts, every
+filter). Tools take `mode: "auto" | "database" | "realtime"`:
+
+- `auto` (default) tries the cheap path and escalates only if the API says a
+  filter you passed does not exist there. The escalation is reported in the
+  response, never silent.
+- `database` never escalates: if a filter is unsupported you get an error, not a
+  bigger bill.
+- Counting is the exception — a realtime count costs money, so `count_leads` /
+  `count_companies` refuse to run one unless you ask for `mode: "realtime"`
+  explicitly. They tell you which filters forced the choice instead.
+
+#### Budget-safe flow
+
+```
+count_leads (free)  →  preview_leads (cheap)  →  search_leads (per row)
+                                              →  generate_email on the ids you kept
+```
+
+`get_balance` before and after a batch gives you an exact spend figure to report.
+
+### Agent skill
+
+Tools give an agent the ability to call Generect; a skill gives it the procedure.
+`skills/generect-lead-workflows` documents the flows above so an autonomous agent
+follows them without being told each time:
+
+```bash
+npx skills add generect/generect_mcp --skill generect-lead-workflows
+```
+
+See [skills/README.md](skills/README.md). Release process and the full list of
+places a version has to land: [RELEASING.md](RELEASING.md).
 
 ### Cursor integration (settings.json excerpt)
 
@@ -257,16 +322,27 @@ Some MCP clients allow spawning the server via SSH, using stdio over the SSH ses
 
 ### Local testing helpers
 
-- Run a simple health check against the API:
+All three default to **free** API calls only — a smoke test should never quietly
+bill whoever runs it.
+
+- Health check (account, price book, free cached count):
 
 ```bash
 npm run health -- <api-key>
 ```
 
-- Call tools via a local MCP client:
+- Which filters the free cached index supports right now (free counts only):
+
+```bash
+npm run probe -- <api-key>
+```
+
+- Call tools via a local MCP client. Free tools by default; `--paid` adds one
+  3-row search and one email lookup, and the run prints what it spent:
 
 ```bash
 npm run mcp:client -- <api-key>
+npm run mcp:client -- <api-key> --paid
 ```
 
 ### Security Notes

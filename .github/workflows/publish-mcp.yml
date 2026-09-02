@@ -1,7 +1,7 @@
 name: Publish to MCP Registry
 
 on:
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch: # Manual trigger
   push:
     branches:
       - main
@@ -9,7 +9,6 @@ on:
       - 'server.json'
 
 permissions:
-  id-token: write  # Required for OIDC
   contents: read
 
 jobs:
@@ -19,21 +18,50 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Pinned. v1.0.0 requested an OIDC audience the registry stopped accepting
+      # ("invalid audience: expected https://registry.modelcontextprotocol.io,
+      # got [mcp-registry]"), which silently failed every run from late 2025
+      # onward while the registry entry stayed on 0.1.2.
       - name: Download MCP Publisher
+        env:
+          PUBLISHER_VERSION: v1.8.1
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/download/v1.0.0/mcp-publisher_1.0.0_linux_amd64.tar.gz" | tar xz
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/${PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" | tar xz
           chmod +x mcp-publisher
+          ./mcp-publisher --version || true
 
-      - name: Authenticate with GitHub OIDC
+      # We publish under the `com.generect/*` namespace, which is owned by the
+      # generect.com domain. GitHub OIDC can only vouch for `io.github.generect/*`,
+      # so domain auth is the only method that can publish this name.
+      - name: Check domain signing key is configured
+        env:
+          KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
         run: |
-          ./mcp-publisher login github-oidc
+          if [ -z "$KEY" ]; then
+            echo "::error::Secret MCP_REGISTRY_PRIVATE_KEY is not set."
+            echo "One-time setup: generate an ed25519 key, publish its public half as a TXT record"
+            echo "  v=MCPv1; k=ed25519; p=<base64-public-key>"
+            echo "on _mcp-registry.generect.com, then store the hex private key as this secret."
+            exit 1
+          fi
+
+      - name: Authenticate against the generect.com domain
+        run: |
+          ./mcp-publisher login dns \
+            --domain generect.com \
+            --private-key "${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}"
 
       - name: Publish to MCP Registry
-        run: |
-          ./mcp-publisher publish
+        run: ./mcp-publisher publish
 
-      - name: Show result
-        if: success()
+      - name: Verify the registry now serves this version
         run: |
-          echo "✅ Successfully published to MCP Registry!"
-          echo "Server: io.github.generect/generect-mcp"
+          VERSION=$(node -p "require('./server.json').version")
+          LATEST=$(curl -fsSL "https://registry.modelcontextprotocol.io/v0/servers?search=generect" \
+            | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).servers.filter(s=>s.server.name==="com.generect/generect-mcp"&&s._meta["io.modelcontextprotocol.registry/official"].isLatest).map(s=>s.server.version)[0] ?? "none"')
+          echo "server.json=$VERSION registry=$LATEST"
+          if [ "$VERSION" != "$LATEST" ]; then
+            echo "::error::Registry still serves $LATEST after publishing $VERSION."
+            exit 1
+          fi
+          echo "Published com.generect/generect-mcp $VERSION"
