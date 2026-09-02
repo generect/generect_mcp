@@ -18,6 +18,7 @@ import {
   consumeHandoff,
   OAuthClient,
 } from './storage.js';
+import { isValidRedirectUri, redirectPolicyHint, describeRedirectTarget, MAX_REDIRECT_URIS } from './redirect.js';
 import { generateAccessToken, ACCESS_TOKEN_TTL_SECONDS, getOAuthBaseUrl } from './jwt.js';
 import { safeFetchJson } from './ssrf.js';
 import { rateLimitAllow } from './ratelimit.js';
@@ -268,12 +269,15 @@ async function resolveClient(clientId: string, ip?: string): Promise<OAuthClient
         : [metadata.response_types]
       : ['code'];
 
-    // Validate redirect URIs from metadata document against allowlist
+    if (metadata.redirect_uris.length > MAX_REDIRECT_URIS) {
+      lastResolveFailure = `Client ${clientId} declares more than ${MAX_REDIRECT_URIS} redirect_uris.`;
+      return null;
+    }
+
+    // Validate redirect URIs from the metadata document against the policy
     for (const uri of metadata.redirect_uris) {
       if (!isValidRedirectUri(uri)) {
-        lastResolveFailure =
-          `Client ${clientId} declares redirect_uri ${uri}, which is not on this server's allowlist. ` +
-          `Add its host to MCP_ALLOWED_REDIRECT_DOMAINS (or set MCP_ALLOW_ANY_HTTPS_REDIRECT=true).`;
+        lastResolveFailure = `Client ${clientId} declares redirect_uri ${uri}, which this server will not accept. ${redirectPolicyHint()}`;
         console.error(`[oauth] Rejected metadata client ${clientId}: disallowed redirect_uri ${uri}`);
         return null;
       }
@@ -474,15 +478,13 @@ async function handleHandoffInfo(req: Request, res: Response) {
     res.status(404).json({ error: 'invalid_handoff', error_description: 'Unknown or expired authorization request.' });
     return;
   }
-  let redirectHost = h.redirectUri;
-  try {
-    redirectHost = new URL(h.redirectUri).host;
-  } catch {
-    /* keep raw */
-  }
+  const target = describeRedirectTarget(h.redirectUri);
   res.json({
     client_name: h.clientName,
-    redirect_host: redirectHost,
+    redirect_host: target.label,
+    // Lets the product consent page say "opens an app on your computer" for a
+    // private-use scheme callback, where a bare host means nothing to the user.
+    redirect_is_app: target.isExternalApp,
     scope: h.scope,
     expires_at: new Date(h.expiresAt).toISOString(),
   });
@@ -590,6 +592,27 @@ async function handleAuthorizePost(req: Request, res: Response) {
     return;
   }
 
+  // The GET handler enforces PKCE, but this POST is reachable on its own, and
+  // whatever challenge/method arrives here is what the code is bound to. With
+  // private-use scheme callbacks now accepted, PKCE is the control that makes a
+  // code intercepted by a rogue local app useless — so it is re-checked here
+  // rather than trusted to have survived the round trip through the form.
+  if (!codeChallenge) {
+    res
+      .status(400)
+      .send(renderErrorPage({ error: 'invalid_request', errorDescription: 'PKCE code_challenge is required' }));
+    return;
+  }
+  if (codeChallengeMethod && codeChallengeMethod !== 'S256') {
+    res.status(400).send(
+      renderErrorPage({
+        error: 'invalid_request',
+        errorDescription: 'Only S256 code_challenge_method is supported',
+      }),
+    );
+    return;
+  }
+
   const rerender = (error: string) =>
     res.status(400).send(
       renderLoginPage({
@@ -623,12 +646,9 @@ async function handleAuthorizePost(req: Request, res: Response) {
     if (!rateLimitAllow(`login:${email.toLowerCase()}`, LOGIN_EMAIL_MAX, AUTHORIZE_WINDOW_MS)) {
       return void rerender('Too many sign-in attempts for this account. Please retry later.');
     }
-    let host = 'client';
-    try {
-      host = new URL(redirectUri).host;
-    } catch {
-      /* keep default */
-    }
+    // Fallback label only; describeRedirectTarget copes with callbacks that have
+    // no hostname at all (`com.example.app:/cb`), where `new URL().host` is ''.
+    const host = describeRedirectTarget(redirectUri).label || 'client';
     // Token name is UNIQUE per client_id (hash suffix), so an attacker who
     // registers a client with a colliding display name cannot make the reuse
     // lookup hand them a victim's pre-existing token. The label is sanitized.
@@ -647,7 +667,8 @@ async function handleAuthorizePost(req: Request, res: Response) {
     clientId,
     redirectUri,
     codeChallenge,
-    codeChallengeMethod,
+    // Normalised: the check above accepted only S256 or an absent method.
+    codeChallengeMethod: 'S256',
     apiToken: normalizedToken,
     userId,
     scope,
@@ -873,6 +894,16 @@ async function handleRegister(req: Request, res: Response) {
 
   const normalizedRedirectUris = Array.isArray(redirectUris) ? redirectUris : [redirectUris];
 
+  // Registration is unauthenticated and the client record is persisted, so bound
+  // what one caller can make us keep.
+  if (normalizedRedirectUris.length > MAX_REDIRECT_URIS) {
+    res.status(400).json({
+      error: 'invalid_client_metadata',
+      error_description: `At most ${MAX_REDIRECT_URIS} redirect_uris may be registered.`,
+    });
+    return;
+  }
+
   for (const uri of normalizedRedirectUris) {
     if (!isValidRedirectUri(uri)) {
       // Previously a silent 400: an integration attempt was refused with no trace
@@ -890,7 +921,10 @@ async function handleRegister(req: Request, res: Response) {
       );
       res.status(400).json({
         error: 'invalid_redirect_uri',
-        error_description: `Invalid redirect URI: ${uri}. Must be localhost or an allowed domain (*.generect.com, claude.ai, linear.app, or MCP_ALLOWED_REDIRECT_DOMAINS).`,
+        // Say what this server actually accepts. The old text named four hosts
+        // that had long stopped being the real rule, which sent integrators
+        // looking for an allowlist to be added to instead of at their URI.
+        error_description: `Invalid redirect URI: ${uri.slice(0, 200)}. ` + redirectPolicyHint(),
       });
       return;
     }
@@ -928,53 +962,5 @@ async function handleRegister(req: Request, res: Response) {
   });
 }
 
-/**
- * Returns true if the hostname is on the redirect URI allowlist.
- * Allowlist: localhost/private IPs, *.generect.com, first-party MCP client hosts
- * (claude.ai, linear.app), and any extra comma-separated hostnames in
- * MCP_ALLOWED_REDIRECT_DOMAINS.
- */
-function isAllowedRedirectHostname(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-
-  // localhost / private networks
-  if (host === 'localhost' || host === '127.0.0.1') return true;
-  if (/^192\.168\./.test(host)) return true;
-  if (/^10\./.test(host)) return true;
-  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return true;
-
-  // Generect product domains
-  if (/^([a-z0-9-]+\.)*generect\.com$/i.test(host)) return true;
-
-  // First-party MCP clients that complete the OAuth flow in their own product.
-  // Their redirect targets are fixed, published callback URLs:
-  //   claude.ai   -> https://claude.ai/api/mcp/auth_callback
-  //   linear.app  -> https://linear.app/connect/mcp/callback
-  if (host === 'claude.ai' || host === 'www.claude.ai') return true;
-  if (host === 'linear.app' || host === 'www.linear.app') return true;
-
-  // Extra domains configured at deploy time
-  const extra = (process.env.MCP_ALLOWED_REDIRECT_DOMAINS ?? '')
-    .split(',')
-    .map(d => d.trim().toLowerCase())
-    .filter(Boolean);
-  return extra.includes(host);
-}
-
-// Exported for tests: the allowlist is security-critical, so it is asserted
-// directly rather than only through the HTTP handlers.
-export function isValidRedirectUri(uri: string): boolean {
-  try {
-    const url = new URL(uri);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-    // Opt-in open policy: accept any https callback (what a public MCP server
-    // that wants to work with *any* client needs). http stays restricted to
-    // localhost/private ranges regardless, so codes are never sent in clear.
-    if (url.protocol === 'https:' && process.env.MCP_ALLOW_ANY_HTTPS_REDIRECT === 'true') return true;
-    if (url.protocol === 'http:' && !isAllowedRedirectHostname(url.hostname)) return false;
-    if (url.protocol === 'https:' && !isAllowedRedirectHostname(url.hostname)) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
+// The redirect-URI policy itself lives in ./redirect.ts, so that the consent UI
+// can describe a destination without importing the OAuth router.
