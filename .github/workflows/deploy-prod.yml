@@ -1,5 +1,11 @@
 name: Deploy MCP to production
 
+# NOTE — this workflow drives the *Docker* path. Production (mcp.generect.com)
+# does NOT run Docker: it runs pm2 as `mcp_user` from /home/mcp_user/generect_mcp
+# on this same host (chronos), node via nvm, single instance because OAuth state
+# is in memory. The hand-run pm2 procedure is in RELEASING.md — that is the live
+# one. Keep this file honest rather than trusting it to deploy.
+
 on:
   workflow_dispatch:
     inputs:
@@ -55,21 +61,38 @@ jobs:
           sleep 5
           docker ps --filter "name=$CONTAINER_NAME" --format "table {{.ID}}\t{{.Names}}\t{{.Status}}"
 
-      - name: Verify security fix
+      - name: Verify redirect policy is live
         run: |
-          echo "=== Testing OAuth redirect URI allowlist fix ==="
-          RESPONSE=$(curl -s -X POST https://mcp.generect.com/oauth/register \
-            -H "Content-Type: application/json" \
-            -d '{"redirect_uris":["https://evil.com/callback"],"client_name":"verify-deploy"}' \
-            -w "\nHTTP_STATUS:%{http_code}" 2>&1)
-          echo "$RESPONSE"
-          HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
-          if [ "$HTTP_CODE" = "400" ]; then
-            echo "SUCCESS: Security fix active — evil.com redirect rejected with HTTP 400"
-          else
-            echo "FAILURE: Expected HTTP 400 but got HTTP $HTTP_CODE — fix NOT active!"
-            exit 1
-          fi
+          # The old assertion here ("evil.com must be rejected") stopped being
+          # true when the redirect policy went open: any https callback
+          # registers, on purpose, so that every MCP client can connect. What
+          # still has to hold is checked below — a client scheme gets in, and
+          # the three things that must never get in stay out.
+          probe() {
+            curl -s -o /dev/null -w "%{http_code}" -X POST \
+              https://mcp.generect.com/oauth/register \
+              -H "Content-Type: application/json" \
+              -d "{\"redirect_uris\":[\"$1\"],\"client_name\":\"verify-deploy\"}"
+          }
+          fail=0
+          expect() {
+            code=$(probe "$2")
+            if [ "$code" = "$1" ]; then
+              echo "ok   $2 -> $code"
+            else
+              echo "FAIL $2 -> $code (expected $1)"
+              fail=1
+            fi
+          }
+          # The point of the change: an editor's own URI scheme must register.
+          expect 201 "cursor://anysphere.cursor-mcp/oauth/callback"
+          # Browser-executable scheme — we navigate to this from our own origin.
+          expect 400 "javascript:alert(1)"
+          # Cleartext http to a public host dressed as a private range.
+          expect 400 "http://10.evil.com/cb"
+          # Embedded credentials, i.e. https://claude.ai@evil.example/cb.
+          expect 400 "https://claude.ai@evil.example/cb"
+          [ "$fail" = "0" ] || { echo "Redirect policy is NOT the expected one."; exit 1; }
 
       - name: Delete test OAuth clients
         run: |

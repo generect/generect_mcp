@@ -297,3 +297,55 @@ npm run mcp:client -- <api-key>
 | `MCP_ALLOWED_REDIRECT_SCHEMES` | — | Extra allowed private-use URI schemes, `strict` only (comma-separated, e.g. `cursor,vscode`) |
 | `MCP_ALLOW_ANY_HTTPS_REDIRECT` | — | Legacy: opens https callbacks under `strict` (implied by `open`) |
 - **Log privacy** — prospect payloads are redacted from logs by default (`MCP_LOG_PAYLOADS=1` to opt in)
+
+## Brokered consent: which product UI approves the connection
+
+`/oauth/authorize` does not ask for a password. It hands off to a page in the
+product where the user is already signed in, and that page posts a freshly
+minted API token back to `/oauth/broker`. Two env vars decide which page that is,
+and **they must be changed together**:
+
+| Var | Effect |
+|-----|--------|
+| `MCP_CONSENT_URL` | Where `/oauth/authorize` redirects the user (`…/authorize/mcp?handoff=…&mcp=…`) |
+| `MCP_CONSENT_ORIGIN` | The only `Origin` allowed to call `/oauth/broker`. Defaults to the origin of `MCP_CONSENT_URL` — **but production sets it explicitly in `.env`**, so the default does not save you |
+
+Moving consent from one host to the other by editing only `MCP_CONSENT_URL`
+leaves the broker refusing the new page with
+`403 {"error":"forbidden","error_description":"Origin not allowed to broker consent."}`,
+*after* the user has already clicked Approve. Change both lines, then prove it:
+
+```bash
+# expect 400 invalid_handoff (origin accepted), NOT 403 forbidden
+curl -s -X POST https://mcp.generect.com/oauth/broker \
+  -H 'Content-Type: application/json' -H "Origin: <the new consent origin>" \
+  -d '{"handoff":"nonexistent-probe","deny":true}'
+```
+
+CORS is not the control here — the server reflects any `Origin` (bearer auth,
+no cookies), so a working preflight proves nothing about the broker.
+
+## Deploying to production
+
+`mcp.generect.com` runs **pm2, not Docker** (`.github/workflows/deploy-prod.yml`
+is the unused Docker path). Single instance, always: OAuth state and MCP sessions
+live in memory, so a second worker split-brains auth.
+
+```bash
+ssh root@chronos                      # 65.21.69.164
+su - mcp_user && source ~/.nvm/nvm.sh # node via nvm
+cd ~/generect_mcp
+cp -r dist dist.bak.$(date +%H%M%S)   # what previous deploys did; keeps a rollback
+git pull && npm ci && npm run build
+$EDITOR .env                          # consent vars, redirect policy
+pm2 reload generect-mcp && pm2 list   # version column should show the new one
+```
+
+Then verify from outside the box — `pm2 list` showing `online` is not evidence
+that the new behaviour is live:
+
+```bash
+curl -s https://mcp.generect.com/health
+curl -s -o /dev/null -w '%{redirect_url}\n' \
+  "https://mcp.generect.com/oauth/authorize?client_id=<id>&redirect_uri=…&response_type=code&code_challenge=…&code_challenge_method=S256"
+```
