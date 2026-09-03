@@ -153,6 +153,7 @@ accept `timeout_ms`.
 | `search_companies` | per returned row |
 | `preview_leads` | per returned row (cheapest way to see real people) |
 | `enrich_lead` / `get_lead_by_url` | per record found |
+| `resolve_profile` | per **resolved** profile — the cheapest call here; an unresolvable reference is free |
 | `enrich_company` | per record found |
 | `generate_email` | per **valid** email found |
 | `validate_email` | per email submitted — every address, whatever the verdict |

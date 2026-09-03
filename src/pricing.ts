@@ -13,7 +13,8 @@ export type Operation =
   | 'preview'
   | 'email_find'
   | 'email_validate'
-  | 'phone_find';
+  | 'phone_find'
+  | 'profile_resolve';
 
 // Published Tier 0 prices (docs.generect.com/billing/pricing). These are the
 // FALLBACK only. Real accounts sit on a discount tier and — as of 2026-08 — the
@@ -32,6 +33,12 @@ const LIST_PRICE_USD: Record<Operation, number> = {
   email_find: 0.02,
   email_validate: 0.005,
   phone_find: 0.4,
+  // Its own service type (`api_profile_resolve`) rather than the cached rate it
+  // used to share with enrich and search: one identity lookup, not a full
+  // record. Flat across tiers — no ServicePrice row is seeded for it, and the
+  // backend falls back to coefficient 1.0 — so this list price IS the real
+  // price, unlike the rows above.
+  profile_resolve: 0.0005,
 };
 
 // What one unit of billing means for each operation — the part agents get wrong
@@ -47,6 +54,8 @@ const BILLING_UNIT: Record<Operation, string> = {
   email_find: 'per VALID email found (a miss is free)',
   email_validate: 'per email submitted — every address is billed, whatever the verdict',
   phone_find: 'per phone found (a miss is free)',
+  profile_resolve:
+    'per RESOLVED profile (an unresolvable reference is free) — duplicates in one batch are billed per row, so deduplicate first',
 };
 
 // Field names in the account tier endpoint -> our operations.
@@ -57,6 +66,11 @@ const TIER_FIELD_TO_OPS: Record<string, Operation[]> = {
   api_email_finder: ['email_find'],
   api_email_validation: ['email_validate'],
   phones: ['phone_find'],
+  // Absent from `service_prices` today, by design: the backend seeds no
+  // ServicePrice row for this service type, so every tier pays the base price.
+  // Mapped anyway — if a row is ever added, the account rate starts winning
+  // here instead of silently keeping the list price.
+  api_profile_resolve: ['profile_resolve'],
 };
 
 export interface PriceBook {

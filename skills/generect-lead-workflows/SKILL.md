@@ -31,6 +31,7 @@ count_leads (free)  →  preview_leads (cheapest paid)  →  search_leads (per r
 | `get_balance`, `get_bulk_job`, `manage_webhooks`, `health` | **free** |
 | `preview_leads` | per returned row — the cheapest way to see real people |
 | `search_leads`, `search_companies` | per returned row |
+| `resolve_profile` | per **resolved** profile — the cheapest call here; an unresolvable reference is free |
 | `enrich_lead`, `enrich_company` | per record found; a miss is free |
 | `generate_email` | per **valid** email; a miss is free |
 | `validate_email` | per address **submitted** — every one, whatever the verdict |
@@ -99,11 +100,18 @@ Task: *"enrich these 50 signups and mark which are ICP-fit"*.
 2. Drop rows with no usable identifier (need one of: Generect id, LinkedIn URL,
    email, or name + company domain). Enriching garbage costs the same as
    enriching a real record.
-3. ≤10 records: `enrich_lead` per record. More: `start_bulk_job` with
+3. If any LinkedIn URL is the anonymous `/in/ACwAA…` kind — the shape Sales
+   Navigator leaves in exports and CRMs — put those through `resolve_profile`
+   first (up to 50 per call). It is the cheapest call on the server, and the
+   `id` it returns is what every later step accepts, so you stop guessing at an
+   identifier you cannot read. Deduplicate before the batch: the same person can
+   arrive as an `ACwAA…` id, an `ACoAA…` id and a vanity slug, those three
+   strings cannot be compared offline, and each duplicate row is a charge.
+4. ≤10 records: `enrich_lead` per record. More: `start_bulk_job` with
    `job_type: "enrich_leads"` (max 50 per job), then `get_bulk_job`.
-4. Score against the ICP in your own code — do not pay for data to make a
+5. Score against the ICP in your own code — do not pay for data to make a
    judgement you can make from what you already have.
-5. Write the enriched file next to the input, with a `source` and a date column.
+6. Write the enriched file next to the input, with a `source` and a date column.
 
 ## Flow 4 — outreach-ready list
 

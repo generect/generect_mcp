@@ -442,6 +442,25 @@ function compactCompany(company: any) {
   };
 }
 
+// Identity-only record from POST /profile/resolve/. Drops the two signed CDN
+// photo URLs (long, and they expire) and the fields that duplicate others
+// (`sales_id` === `id`, `unformatted_full_name` === `full_name`). `compact:
+// false` returns the record as the API sent it, photos included.
+function compactProfile(profile: any) {
+  return {
+    linkedin_url: profile.linkedin_url ?? null,
+    public_identifier: profile.public_identifier ?? null,
+    linkedin_id: profile.linkedin_id ?? null,
+    id: profile.id ?? profile.sales_id ?? null,
+    full_name: profile.full_name ?? profile.unformatted_full_name ?? null,
+    first_name: profile.first_name ?? null,
+    last_name: profile.last_name ?? null,
+    headline: profile.headline ?? null,
+    is_memorialized: profile.is_memorialized ?? null,
+    input: profile.input ?? null,
+  };
+}
+
 const compactParam = (what: string) =>
   z
     .boolean()
@@ -1212,7 +1231,83 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     },
   );
 
-  // 10. generate_email
+  // 10. resolve_profile
+  loggedTool(
+    server,
+    'resolve_profile',
+    `Reveal who is behind an anonymous LinkedIn profile link. ${priceTag('profile_resolve')} Takes the obfuscated links that Sales Navigator leaves in exports, CRMs and ad platforms — \`linkedin.com/in/ACwAA…\` — plus Sales Navigator lead URLs, bare profile ids and urns, and returns the real profile URL and identity. Pass \`profiles\` (up to 50) to do a batch in one call. The \`id\` it returns is the same identifier enrich_lead, generate_email and find_phone accept, so this is the cheap first step before spending on a full record. Returns identity only — no location, company or work history; use enrich_lead for those. The numeric member id is NOT accepted as input (LinkedIn answers 403 to it); it comes back as \`linkedin_id\`.`,
+    {
+      url: z
+        .string()
+        .describe(
+          'A single LinkedIn person reference: profile URL of any flavour (including /in/ACwAA… and /sales/lead/…), a public identifier, an obfuscated id (ACwAA… or ACoAA…) or an urn. Matched case-insensitively.',
+        )
+        .optional(),
+      id: z.string().describe('Alias for `url` — same accepted values. Use whichever reads better.').optional(),
+      profiles: z
+        .array(z.string())
+        .max(50)
+        .describe(
+          'Batch mode: 1–50 references, mixed freely. One row per input, in input order, each either a resolved profile or {input, error}. Duplicates are billed per row — deduplicate first.',
+        )
+        .optional(),
+      compact: compactParam('profile'),
+      timeout_ms: PAGING.timeout_ms,
+    },
+    async (args, extra) => {
+      try {
+        const Authorization = await resolveAuthHeader(extra);
+        const headers = apiHeaders(Authorization);
+        const shape = (profile: any) => (args?.compact !== false ? compactProfile(profile) : profile);
+
+        if (Array.isArray(args?.profiles) && args.profiles.length > 0) {
+          const data = await callApi(
+            fetcher,
+            `${apiBase}${V1}/profile/resolve/bulk/`,
+            { method: 'POST', headers, body: JSON.stringify({ profiles: args.profiles }) },
+            timeoutOf(args),
+          );
+          const rows: any[] = Array.isArray(data?.data) ? data.data : [];
+          return result({
+            // The API's own counts, not ours: `resolved` is exactly what was billed.
+            total: data?.meta?.total ?? rows.length,
+            resolved: data?.meta?.resolved ?? rows.filter(r => !r?.error).length,
+            cost: receipt('profile_resolve', data),
+            profiles: rows.map(row => (row?.error ? { input: row.input ?? null, error: row.error } : shape(row))),
+          });
+        }
+
+        const value = args?.url ?? args?.id;
+        if (!value) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Pass `url` (or `id`) for one profile, or `profiles` for a batch of up to 50.',
+              },
+            ],
+          };
+        }
+        const data = await callApi(
+          fetcher,
+          `${apiBase}${V1}/profile/resolve/`,
+          { method: 'POST', headers, body: JSON.stringify({ linkedin_url: value }) },
+          timeoutOf(args),
+        );
+        const profile = data?.data ?? null;
+        return result({
+          found: !!profile,
+          cost: receipt('profile_resolve', data),
+          profile: profile ? shape(profile) : null,
+        });
+      } catch (err: unknown) {
+        return apiError(err);
+      }
+    },
+  );
+
+  // 11. generate_email
   loggedTool(
     server,
     'generate_email',
@@ -1297,7 +1392,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     },
   );
 
-  // 11. validate_email
+  // 12. validate_email
   loggedTool(
     server,
     'validate_email',
@@ -1329,7 +1424,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     },
   );
 
-  // 12. find_phone
+  // 13. find_phone
   loggedTool(
     server,
     'find_phone',
@@ -1384,7 +1479,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     },
   };
 
-  // 13. start_bulk_job
+  // 14. start_bulk_job
   loggedTool(
     server,
     'start_bulk_job',
@@ -1446,7 +1541,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     },
   );
 
-  // 14. get_bulk_job
+  // 15. get_bulk_job
   loggedTool(
     server,
     'get_bulk_job',
@@ -1481,7 +1576,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     },
   );
 
-  // 15. manage_webhooks
+  // 16. manage_webhooks
   loggedTool(
     server,
     'manage_webhooks',
@@ -1577,7 +1672,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     },
   );
 
-  // 16. health
+  // 17. health
   loggedTool(
     server,
     'health',
