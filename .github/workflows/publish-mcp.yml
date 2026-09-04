@@ -39,9 +39,13 @@ jobs:
         run: |
           if [ -z "$KEY" ]; then
             echo "::error::Secret MCP_REGISTRY_PRIVATE_KEY is not set."
-            echo "One-time setup: generate an ed25519 key, publish its public half as a TXT record"
+            echo "One-time setup: generate an ed25519 key and publish its public half as a TXT"
+            echo "record on the APEX domain generect.com (like SPF, NOT under a _mcp-registry"
+            echo "or _mcp-auth selector — the registry rejects those and says so explicitly):"
             echo "  v=MCPv1; k=ed25519; p=<base64-public-key>"
-            echo "on _mcp-registry.generect.com, then store the hex private key as this secret."
+            echo "Then store the hex-encoded ed25519 seed (64 hex chars) as this secret."
+            echo "Multiple MCPv1 records may coexist at the apex: the registry tries every one,"
+            echo "so adding a key never invalidates an existing one."
             exit 1
           fi
 

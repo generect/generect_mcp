@@ -119,4 +119,4 @@ test('a value that is only the scheme name is treated as no credential', () => {
     assert.equal(toApiKey(v), '', `toApiKey(${JSON.stringify(v)})`);
     assert.equal(toAuthHeader(v), '', `toAuthHeader(${JSON.stringify(v)})`);
   }
-})
+});
