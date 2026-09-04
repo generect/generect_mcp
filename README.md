@@ -140,7 +140,7 @@ accept `timeout_ms`.
 |------|--------------|
 | `count_leads` | How many leads match an ICP + what the next step costs at *your* rates. Run before `search_leads`. |
 | `count_companies` | Same, for companies. |
-| `get_balance` | Balance, month-to-date usage, and this account's real per-operation prices. |
+| `get_balance` | Balance, this account's real per-operation prices, plus optional `include_usage` (spend by operation) and `include_token_analytics` (which token made which calls). |
 | `get_bulk_job` | Poll a bulk job (the work was billed at submit time). |
 | `manage_webhooks` | List/create/update/delete/test webhook endpoints. |
 | `health` | Liveness + credential check against a free endpoint. Safe for monitors. |
@@ -151,7 +151,7 @@ accept `timeout_ms`.
 |------|--------|
 | `search_leads` | per returned row |
 | `search_companies` | per returned row |
-| `preview_leads` | per returned row (cheapest way to see real people) |
+| `preview_leads` | per returned row (cheapest way to see real people); `count_only: true` is free and is a second opinion on `count_leads`, since preview and cached search are different indexes |
 | `enrich_lead` / `get_lead_by_url` | per record found |
 | `resolve_profile` | per **resolved** profile — the cheapest call here; an unresolvable reference is free |
 | `enrich_company` | per record found |
@@ -174,6 +174,65 @@ filter). Tools take `mode: "auto" | "database" | "realtime"`:
 - Counting is the exception — a realtime count costs money, so `count_leads` /
   `count_companies` refuse to run one unless you ask for `mode: "realtime"`
   explicitly. They tell you which filters forced the choice instead.
+
+#### Filter vocabularies — read them, do not guess
+
+Measured against the live API, the v1 search endpoints validate their filters
+**inconsistently**:
+
+| Filter | Unknown value |
+|--------|---------------|
+| `locations`, `company_headcounts`, `company_types` | HTTP 400 naming the field |
+| `company_industries`, `seniorities` | **accepted — 0 results, $0, no error** |
+
+That second row is the dangerous one. `company_industries: ["Fintech"]` is not a
+LinkedIn industry and comes back as a perfectly successful count of zero, which
+reads exactly like "this audience does not exist".
+
+So the server checks these values itself, before sending anything:
+
+- an unknown **industry**, headcount bucket or company type is refused locally
+  with the closest valid names (`Fintech` → `Financial Services`,
+  `50-200` → `51-200`), and nothing is sent or charged;
+- a value that is merely mis-spelled or mis-cased is **corrected**
+  (`software development` → `Software Development`) — matching is exact, so
+  sending it as typed would have returned zero;
+- an unknown **seniority** or function is a warning, not a refusal: the engine
+  does match loosely (`Owner` finds people even though the canonical label is
+  `Owner / Partner`);
+- `allow_unlisted_values: true` overrides the check if this server's snapshot is
+  ever behind the API.
+
+The full vocabularies are exposed as resources, so a client can read them once
+and stop guessing:
+
+```
+generect://vocabulary/industries        434 names, with parents
+generect://vocabulary/seniorities
+generect://vocabulary/functions         (realtime only)
+generect://vocabulary/company-types
+generect://vocabulary/headcounts
+generect://vocabulary/follower-ranges   (realtime only)
+generect://account/pricing              this account's real per-operation prices
+generect://account/balance              balance and month-to-date usage
+```
+
+They are regenerated from the backend's own filter data with
+`node scripts/gen-vocabulary.mjs <api_parser checkout>` — never hand-edited.
+
+#### Prompts
+
+Workflow prompts ship with the server and appear as slash commands in clients
+that support them: `size_an_audience`, `build_prospect_list`, `enrich_my_list`,
+`spend_report`. Each one starts from the free step.
+
+#### Spend ceiling
+
+A row cap bounds results, not money. Any call whose worst case exceeds
+`MCP_MAX_SPEND_PER_CALL` (default **$5**) is refused with the exact figure and
+has to be repeated with `confirm_spend_usd` set to at least that amount. This is
+checked *before* `start_bulk_job` submits, because a bulk job reserves its whole
+cost at submit time and cannot be undone.
 
 #### Budget-safe flow
 
