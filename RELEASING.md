@@ -41,6 +41,16 @@ curl -s https://mcp.generect.com/health
   to an org-owned account, then store an automation token as a repo secret.
 - **`MCP_REGISTRY_PRIVATE_KEY`** — the `com.generect/*` namespace is owned by the
   domain, and GitHub OIDC can only vouch for `io.github.generect/*`. Generate an
-  ed25519 key, publish the public half as a TXT record on
-  `_mcp-registry.generect.com` (`v=MCPv1; k=ed25519; p=<base64>`), store the hex
-  private key as the secret.
+  ed25519 key, publish the public half as a TXT record **on the apex domain
+  `generect.com`** (`v=MCPv1; k=ed25519; p=<base64>`), and store the hex-encoded
+  ed25519 seed (64 hex chars) as the secret.
+
+  MCP DNS auth reads the **apex**, like SPF. A `_mcp-registry` / `_mcp-auth`
+  selector is the mistake people make coming from DKIM; the registry probes those
+  two names purely so it can tell you the record is in the wrong place
+  (`internal/api/handlers/v0/auth/dns.go`, `commonWrongSelectors`).
+
+  Several MCPv1 records can sit at the apex at once — the registry verifies the
+  signature against **every** published key and passes if any matches. So adding
+  a key is non-destructive and is the safe way to rotate: publish the new record,
+  confirm a publish works, then remove the stale one.

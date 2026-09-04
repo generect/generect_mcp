@@ -62,7 +62,12 @@ const COMPANY_PROBES: Array<[string, Record<string, unknown>]> = [
   ['revenues_range', { revenues_range: { min: 1, max: 50 } }],
 ];
 
-async function run(kind: 'leads' | 'companies', base: Record<string, unknown>, probes: Array<[string, any]>, key: string) {
+async function run(
+  kind: 'leads' | 'companies',
+  base: Record<string, unknown>,
+  probes: Array<[string, any]>,
+  key: string,
+) {
   console.log(`\n--- ${kind}: which filters work in the free cached index ---`);
   let spent = 0;
   for (const [name, extra] of probes) {
@@ -86,7 +91,8 @@ async function main() {
     process.exit(1);
   }
   console.log(`Probe against ${apiBase} — free count endpoints only`);
-  const spent = (await run('leads', LEAD_BASE, LEAD_PROBES, key)) + (await run('companies', COMPANY_BASE, COMPANY_PROBES, key));
+  const spent =
+    (await run('leads', LEAD_BASE, LEAD_PROBES, key)) + (await run('companies', COMPANY_BASE, COMPANY_PROBES, key));
   console.log(`\nTotal charged by this probe: $${spent} (expected: $0)`);
   if (spent !== 0) process.exit(1);
 }

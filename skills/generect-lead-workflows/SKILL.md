@@ -56,6 +56,24 @@ Filters that force the live index: `keywords`, `functions`, `past_company_names`
 `changed_jobs`, `posted_on_linkedin`, `technologies`, `revenues_range`,
 `num_of_followers`, `company_names`. Drop them if cost matters more than reach.
 
+## Filter values are matched exactly, and two of them are not validated
+
+| Filter | Unknown value |
+|--------|---------------|
+| `locations`, `company_headcounts`, `company_types` | HTTP 400 naming the field |
+| `company_industries`, `seniorities` | **accepted — 0 results, $0, no error** |
+
+`company_industries: ["Fintech"]` is not a LinkedIn industry, and the API answers
+with a successful count of **zero**. If you read that as "no such audience" you
+will be wrong and the user will be misinformed.
+
+Read `generect://vocabulary/industries` (434 names, with parents) and pick exact
+values. The MCP server also checks locally and refuses an unknown industry with
+the closest matches, so trust its `blocked_by_vocabulary` and
+`vocabulary_warnings` output over your own guess. Common traps: Fintech →
+`Financial Services`, SaaS → `Software Development`, C-Level → `CXO`,
+Head of X → `Director`.
+
 ## Flow 1 — safe prospect search
 
 Task: *"find 20 heads of partnerships at fintech companies in Germany"*.
@@ -172,7 +190,9 @@ chat; show the fields the user asked for.
 
 | Symptom | What it means | Do this |
 |---------|---------------|---------|
-| `results_count: 0` | The ICP matched nothing. Nothing was charged. | Loosen one filter, count again. Never "try the paid search anyway". |
+| `results_count: 0` | The ICP matched nothing — **or** an industry/seniority value is not a real one, which produces the same successful zero. Nothing was charged. | First re-check the filter values against `generect://vocabulary/*`. Only then loosen a filter and count again. Never "try the paid search anyway". |
+| `status: "not_sent"` with `blocked_by_vocabulary` | A value would have silently matched nothing. Nothing was sent. | Use one of the `did_you_mean` values. |
+| `status: "not_sent"` with `spend_guard` | The call's worst case exceeds the per-call ceiling. | Reduce the row count, or get the user's agreement and repeat with `confirm_spend_usd`. |
 | `needs_realtime: [...]` | Those filters do not exist in the free index. | Drop them for a free count, or ask the user before paying for a live one. |
 | HTTP 400 naming a field | An industry / headcount / type value is not in the taxonomy. | Fix the value — the error names the field. Do not retry blindly. |
 | `Insufficient funds` | Balance is empty. Nothing was charged. | Report and stop. |

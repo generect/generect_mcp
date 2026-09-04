@@ -6,6 +6,20 @@ import { parseAuthHeader } from './auth/parse.js';
 import { toAuthHeader } from './auth/credential.js';
 import { VERSION } from './version.js';
 import { fetchPriceBook, priceTag, receipt, estimate, round, type Operation, type PriceBook } from './pricing.js';
+import { TOOL_META, TOOL_ORDER } from './tool-meta.js';
+import { registerResources } from './resources.js';
+import { registerPrompts } from './prompts.js';
+import {
+  checkVocabulary,
+  applyCanonicalizations,
+  INDUSTRIES,
+  SENIORITIES,
+  FUNCTIONS,
+  COMPANY_TYPES,
+  HEADCOUNTS,
+  FOLLOWER_RANGES,
+  type VocabularyProblem,
+} from './vocabulary.js';
 
 // Structured request/response logging.
 //   - Metadata (tool name, timing, status, correlation id) is logged by default;
@@ -78,33 +92,78 @@ function previewResult(result: any) {
   }
 }
 
-// Wraps a tool handler so every call logs the input (LLM → tool) and the
-// output (tool → LLM) with timing, under a shared request id.
+// Collects tool registrations so they can be emitted in one deterministic
+// order regardless of where they sit in this file. The 2026-07-28 spec asks
+// servers to return `tools/list` in a stable order so clients — and the prompt
+// caches in front of them — can cache it; TOOL_ORDER puts the free pre-flight
+// tools first, which is also the order we want a model to read them in.
+interface Registrar {
+  add(name: string, description: string, schema: any, handler: (args: any, extra: any) => Promise<any>): void;
+  flush(): void;
+}
+
+function createRegistrar(server: McpServer): Registrar {
+  const pending = new Map<string, { description: string; schema: any; handler: (a: any, e: any) => Promise<any> }>();
+  return {
+    add(name, description, schema, handler) {
+      pending.set(name, { description, schema, handler });
+    },
+    flush() {
+      const ordered = [
+        ...TOOL_ORDER.filter(n => pending.has(n)),
+        ...[...pending.keys()].filter(n => !TOOL_ORDER.includes(n)).sort(),
+      ];
+      for (const name of ordered) {
+        const entry = pending.get(name)!;
+        const meta = TOOL_META[name];
+        const wrapped = async (args: any, extra: any) => {
+          const reqId = randomUUID();
+          const started = Date.now();
+          logEvent('tool_call', { reqId, tool: name, input: redact(args) });
+          try {
+            const result = await entry.handler(args, extra);
+            logEvent('tool_result', {
+              reqId,
+              tool: name,
+              ms: Date.now() - started,
+              output: redact(previewResult(result)),
+            });
+            return result;
+          } catch (err: unknown) {
+            logEvent('tool_error', { reqId, tool: name, ms: Date.now() - started, error: String(err) });
+            throw err;
+          }
+        };
+        // registerTool is the current API; server.tool(...) is deprecated in the
+        // SDK and cannot carry a title, annotations or an output schema.
+        const register = (server as any).registerTool?.bind(server);
+        if (register) {
+          register(
+            name,
+            {
+              ...(meta ? { title: meta.title, annotations: meta.annotations, outputSchema: meta.outputSchema } : {}),
+              description: entry.description,
+              inputSchema: entry.schema,
+            },
+            wrapped,
+          );
+        } else {
+          // Older SDKs (and the test harness) only expose the positional form.
+          (server as any).tool(name, entry.description, entry.schema, wrapped);
+        }
+      }
+    },
+  };
+}
+
 function loggedTool(
-  server: McpServer,
+  registrar: Registrar,
   name: string,
   description: string,
   schema: any,
   handler: (args: any, extra: any) => Promise<any>,
 ) {
-  server.tool(name, description, schema, async (args: any, extra: any) => {
-    const reqId = randomUUID();
-    const started = Date.now();
-    logEvent('tool_call', { reqId, tool: name, input: redact(args) });
-    try {
-      const result = await handler(args, extra);
-      logEvent('tool_result', {
-        reqId,
-        tool: name,
-        ms: Date.now() - started,
-        output: redact(previewResult(result)),
-      });
-      return result;
-    } catch (err: unknown) {
-      logEvent('tool_error', { reqId, tool: name, ms: Date.now() - started, error: String(err) });
-      throw err;
-    }
-  });
+  registrar.add(name, description, schema, handler);
 }
 
 // Result helper: MCP clients read `content`, agent frameworks read
@@ -223,6 +282,108 @@ function apiError(err: any) {
 const V1 = '/api/v1';
 
 // ---------------------------------------------------------------------------
+// Vocabulary gate
+// ---------------------------------------------------------------------------
+// Two filters the API does NOT validate — `company_industries` and
+// `seniorities` — come back as a successful count of zero when the value is
+// wrong, which reads exactly like "this audience does not exist" (measured
+// 2026-09-04: "Fintech" -> 0 rows, $0, no error). Checking locally turns that
+// into the correct spelling before anything is sent or billed.
+function gateVocabulary(args: any, ...filterObjects: Array<Record<string, unknown> | undefined | null>) {
+  const problems = filterObjects.flatMap(f => checkVocabulary(f ?? null));
+  const override = args?.allow_unlisted_values === true;
+  const blocking = override ? [] : problems.filter(p => p.severity === 'blocking');
+  const warnings = problems.filter(p => !blocking.includes(p));
+  // A value that is right but spelled differently is fixed rather than reported:
+  // matching is exact, so "software development" would otherwise return zero.
+  let corrected = 0;
+  if (blocking.length === 0) {
+    for (const filters of filterObjects) corrected += applyCanonicalizations(filters, warnings);
+  }
+  return { problems, blocking, warnings, corrected };
+}
+
+function vocabularyBlocked(blocking: VocabularyProblem[]) {
+  return result({
+    status: 'not_sent',
+    cost: { operation: 'none', amount_charged_usd: 0, billed: 'nothing was sent, nothing was charged' },
+    blocked_by_vocabulary: blocking,
+    fix:
+      'Replace each value with one of its did_you_mean options and call again. ' +
+      'These values are matched exactly and the API would not have complained — it would have returned an empty result. ' +
+      "If you are certain the value is valid and this server's vocabulary is simply out of date, pass allow_unlisted_values:true.",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Spend ceiling
+// ---------------------------------------------------------------------------
+// A row cap bounds the number of results; it does not bound the money, because
+// the per-row price differs by mode and tier. An unattended agent (cron, queue
+// worker) has nobody to ask, so anything above the ceiling has to be asked for
+// explicitly via confirm_spend_usd.
+const MAX_SPEND_PER_CALL = Number(process.env.MCP_MAX_SPEND_PER_CALL || '5');
+
+function spendCeiling(book: PriceBook, op: Operation, units: number, args: any) {
+  const worst = estimate(book, op, units);
+  if (worst <= MAX_SPEND_PER_CALL) return null;
+  const confirmed = Number(args?.confirm_spend_usd);
+  if (Number.isFinite(confirmed) && confirmed >= worst) return null;
+  return result({
+    status: 'not_sent',
+    cost: { operation: op, amount_charged_usd: 0, billed: 'nothing was sent, nothing was charged' },
+    spend_guard: {
+      worst_case_usd: worst,
+      units,
+      ceiling_usd: MAX_SPEND_PER_CALL,
+      why: `This call could charge up to $${worst}, above the ${MAX_SPEND_PER_CALL} USD per-call ceiling.`,
+      how_to_proceed: `Lower the row count, or repeat the call with confirm_spend_usd: ${worst} once the user has agreed to that amount.`,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Progress
+// ---------------------------------------------------------------------------
+// A realtime lookup takes 5-60s and a default MCP client gives up at 60. A
+// heartbeat keeps the client from cancelling work the account is already
+// paying for. No-op unless the caller asked for progress.
+async function withProgress<T>(extra: any, label: string, work: () => Promise<T>): Promise<T> {
+  const token = extra?._meta?.progressToken;
+  if (token === undefined || token === null || typeof extra?.sendNotification !== 'function') return work();
+  let ticks = 0;
+  const send = (message: string) =>
+    extra
+      .sendNotification({
+        method: 'notifications/progress',
+        params: { progressToken: token, progress: ticks, message },
+      })
+      .catch(() => {});
+  await send(`${label}: started`);
+  const timer = setInterval(() => {
+    ticks += 1;
+    void send(`${label}: still running (${ticks * 5}s)`);
+  }, 5000);
+  try {
+    return await work();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+/** Ready-to-send arguments for the next page, so the model does not assemble them. */
+function nextPageArgs(args: any, rows: any[], idField: 'id' | 'sales_id' = 'id') {
+  if (!Array.isArray(rows) || rows.length === 0) return undefined;
+  const seen = rows.map(r => r?.[idField] ?? r?.id ?? r?.sales_id).filter(Boolean);
+  if (seen.length === 0) return undefined;
+  const previous = Array.isArray(args?.exclude_ids) ? args.exclude_ids : [];
+  return {
+    note: 'Pass these arguments verbatim to get the next page without paying for duplicates. Ordering is not stable, so offset is unreliable.',
+    exclude_ids: [...previous, ...seen],
+  };
+}
+
+// ---------------------------------------------------------------------------
 // database vs realtime
 // ---------------------------------------------------------------------------
 // Every search/enrich operation exists twice: `database` (cached, sub-second,
@@ -302,14 +463,12 @@ async function callWithMode(
 // they asked for, with no error. That is the exact failure this release exists
 // to prevent, so the removed names stay declared and are handled explicitly.
 const LEGACY_NOTES: Record<string, string> = {
-  exclude_title_keywords:
-    'No v1 equivalent. Narrow job_titles instead, or filter the returned rows yourself.',
+  exclude_title_keywords: 'No v1 equivalent. Narrow job_titles instead, or filter the returned rows yourself.',
   without_company: 'No longer needed — v1 filter-only search is the default when no company anchor is set.',
   get_max_leads: 'Always on now: search responses include results_count without asking.',
   get_max_companies: 'Always on now: search responses include results_count without asking.',
   fallback_from_leads: 'Removed. It fabricated lead-derived name aggregates and cost an extra billable query.',
-  lead_industries:
-    "Removed: v1 filters on the employer's industry. Use company_industries.",
+  lead_industries: "Removed: v1 filters on the employer's industry. Use company_industries.",
   comments: 'Removed: v1 enrich returns the full profile without per-section toggles.',
   posts: 'Removed: v1 enrich returns the full profile without per-section toggles.',
   people_also_viewed: 'Removed: v1 enrich returns the full profile without per-section toggles.',
@@ -363,6 +522,12 @@ const CONTROL_FIELDS = [
   'offset',
   'company_filters',
   'include_prices',
+  'include_usage',
+  'include_token_analytics',
+  'include_transactions',
+  'allow_unlisted_values',
+  'confirm_spend_usd',
+  'count_only',
   'job_title',
   ...Object.keys(LEGACY_NOTES),
 ];
@@ -510,7 +675,10 @@ const LEAD_FILTERS = {
       'Employer types: "Public Company","Privately Held","Non Profit","Government Agency","Educational","Self Employed","Self Owned","Partnership".',
     )
     .optional(),
-  company_name: z.string().describe('Anchor to one company by name (exclusive with company_link/company_id).').optional(),
+  company_name: z
+    .string()
+    .describe('Anchor to one company by name (exclusive with company_link/company_id).')
+    .optional(),
   company_link: z.string().describe('Anchor to one company by LinkedIn URL.').optional(),
   company_id: z.union([z.string(), z.number()]).describe('Anchor to one company by LinkedIn numeric id.').optional(),
   exclude_names: z
@@ -532,6 +700,12 @@ const LEAD_FILTERS = {
     )
     .optional(),
   strict: z.array(z.string()).describe('Fields to match strictly, e.g. ["company_locations"].').optional(),
+  allow_unlisted_values: z
+    .boolean()
+    .describe(
+      'Escape hatch. This server checks industry / seniority / headcount / company-type values against the LinkedIn vocabularies before sending, because the API silently returns 0 results for an unknown industry or seniority instead of rejecting it. Set true only when you are sure a value is valid and this server is out of date.',
+    )
+    .optional(),
 
   // realtime-only below
   keywords: z
@@ -554,7 +728,10 @@ const LEAD_FILTERS = {
     .array(z.number())
     .describe('Time at current company, same buckets as years_in_position' + REALTIME_ONLY_NOTE)
     .optional(),
-  changed_jobs: z.boolean().describe('Only leads who recently changed jobs' + REALTIME_ONLY_NOTE).optional(),
+  changed_jobs: z
+    .boolean()
+    .describe('Only leads who recently changed jobs' + REALTIME_ONLY_NOTE)
+    .optional(),
   posted_on_linkedin: z
     .boolean()
     .describe('Only leads who recently posted on LinkedIn' + REALTIME_ONLY_NOTE)
@@ -594,15 +771,24 @@ const COMPANY_FILTERS = {
     .describe('Company types: "Public Company","Privately Held","Non Profit","Government Agency","Educational", …')
     .optional(),
   exclude_domains: z.array(z.string()).describe('Exclude companies by domain (e.g. existing customers).').optional(),
-  exclude_ids: z.array(z.union([z.string(), z.number()])).describe('Exclude companies by LinkedIn id/URN.').optional(),
+  exclude_ids: z
+    .array(z.union([z.string(), z.number()]))
+    .describe('Exclude companies by LinkedIn id/URN.')
+    .optional(),
 
   // realtime-only below
   keywords: z
     .array(z.string())
     .describe('Free-text keywords across name/description/specialties' + REALTIME_ONLY_NOTE)
     .optional(),
-  company_names: z.array(z.string()).describe('Restrict to specific company names' + REALTIME_ONLY_NOTE).optional(),
-  technologies: z.array(z.string()).describe('Technologies the company uses' + REALTIME_ONLY_NOTE).optional(),
+  company_names: z
+    .array(z.string())
+    .describe('Restrict to specific company names' + REALTIME_ONLY_NOTE)
+    .optional(),
+  technologies: z
+    .array(z.string())
+    .describe('Technologies the company uses' + REALTIME_ONLY_NOTE)
+    .optional(),
   num_of_followers: z
     .array(z.string())
     .describe('LinkedIn follower buckets: "1-50","51-100","101-1000","1001-5000","5001+"' + REALTIME_ONLY_NOTE)
@@ -619,19 +805,37 @@ const COMPANY_FILTERS = {
     .object({ min: z.number().optional(), max: z.number().optional() })
     .describe('Headcount growth in percent' + REALTIME_ONLY_NOTE)
     .optional(),
-  hiring_on_linkedin: z.boolean().describe('Only companies actively hiring' + REALTIME_ONLY_NOTE).optional(),
-  linkedins_links: z.array(z.string()).describe('Specific LinkedIn company URLs' + REALTIME_ONLY_NOTE).optional(),
+  hiring_on_linkedin: z
+    .boolean()
+    .describe('Only companies actively hiring' + REALTIME_ONLY_NOTE)
+    .optional(),
+  linkedins_links: z
+    .array(z.string())
+    .describe('Specific LinkedIn company URLs' + REALTIME_ONLY_NOTE)
+    .optional(),
+  allow_unlisted_values: z
+    .boolean()
+    .describe('Escape hatch for the local vocabulary check — see the lead-side field of the same name.')
+    .optional(),
 };
 
 const PAGING = {
   limit_by: z
     .number()
-    .describe(`Rows to return this call (1–${MAX_RESULT_LIMIT}, default ${DEFAULT_RESULT_LIMIT}). You are billed per returned row, so this number IS the price of the call.`)
+    .describe(
+      `Rows to return this call (1–${MAX_RESULT_LIMIT}, default ${DEFAULT_RESULT_LIMIT}). You are billed per returned row, so this number IS the price of the call.`,
+    )
     .optional(),
   offset_by: z.number().describe('Rows to skip (pagination).').optional(),
   limit: z.number().describe('Alias for limit_by.').optional(),
   offset: z.number().describe('Alias for offset_by.').optional(),
   timeout_ms: z.number().describe('Request timeout in milliseconds.').optional(),
+  confirm_spend_usd: z
+    .number()
+    .describe(
+      `Explicit approval for an unusually large charge. Calls whose worst case exceeds $${MAX_SPEND_PER_CALL} are refused unless this is set to at least the amount the tool reports. Only set it after the user has agreed to that number.`,
+    )
+    .optional(),
 };
 
 const IDENTIFY_LEAD = {
@@ -663,6 +867,7 @@ function leadIdentifier(args: any, domainField: 'domain' | 'company'): Record<st
 }
 
 export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, apiKey: string) {
+  const registrar = createRegistrar(server);
   async function resolveAuthHeader(extra: any): Promise<string> {
     const header = extra?.requestInfo?.headers?.authorization as string | undefined;
     const parsed = parseAuthHeader(header);
@@ -699,7 +904,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 1. count_leads
   loggedTool(
-    server,
+    registrar,
     'count_leads',
     `How many leads match an ICP, and what pulling them would cost. ${priceTag('count_database')} ALWAYS CALL THIS BEFORE search_leads: it is the only way to learn the size of an audience without paying per row, and it returns a cost estimate for the next step at this account's real rates. A realtime count is NOT free ($0.02 flat) — this tool refuses to run one unless you pass mode:"realtime" on purpose.`,
     {
@@ -730,6 +935,26 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const dbUrl = `${apiBase}${V1}/search/database/${path}/count/`;
         const rtUrl = `${apiBase}${V1}/search/realtime/${path}/count/`;
 
+        const gate = gateVocabulary(args, leadFilters, companyFilters);
+        if (gate.blocking.length > 0) return vocabularyBlocked(gate.blocking);
+        const warnings = gate.warnings.length > 0 ? gate.warnings : undefined;
+
+        // There is no realtime counterpart for the two-level count — the API has
+        // /search/realtime/company-leads/ but no .../count/ (verified: 404, $0).
+        if (mode === 'realtime' && twoLevel) {
+          return result({
+            results_count: null,
+            mode: 'none',
+            cost: { operation: 'none', amount_charged_usd: 0, billed: 'nothing was sent' },
+            vocabulary_warnings: warnings,
+            why: 'A realtime count for a two-level (company + lead) ICP does not exist in the API — only the database one does.',
+            options: [
+              'Drop mode:"realtime" to get the free cached count for the same two-level ICP.',
+              'Count the two levels separately: count_companies for the accounts, then count_leads without company_filters for the people.',
+            ],
+          });
+        }
+
         if (mode === 'realtime') {
           const data = await callApi(
             fetcher,
@@ -742,6 +967,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
             results_count: data?.data?.results_count ?? data?.data?.count ?? null,
             mode: 'realtime',
             deprecated_params_ignored: legacyUsed(args),
+            vocabulary_warnings: warnings,
             cost: receipt('count_realtime', data),
             next_step_estimate: estimateBlock(book, 'realtime', data?.data?.results_count),
           });
@@ -762,6 +988,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
             results_count: count,
             mode: 'database',
             deprecated_params_ignored: legacyUsed(args),
+            vocabulary_warnings: warnings,
             cost: receipt('count_database', data),
             next_step_estimate: estimateBlock(book, 'database', count),
             ...(count === 0
@@ -797,7 +1024,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 2. count_companies
   loggedTool(
-    server,
+    registrar,
     'count_companies',
     `How many companies match an ICP, and what pulling them would cost. ${priceTag('count_database')} Call this before search_companies. As with count_leads, a realtime count costs $0.02 and is never run implicitly.`,
     {
@@ -815,6 +1042,10 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const dbUrl = `${apiBase}${V1}/search/database/companies/count/`;
         const rtUrl = `${apiBase}${V1}/search/realtime/companies/count/`;
 
+        const gate = gateVocabulary(args, body);
+        if (gate.blocking.length > 0) return vocabularyBlocked(gate.blocking);
+        const warnings = gate.warnings.length > 0 ? gate.warnings : undefined;
+
         if (mode === 'realtime') {
           const data = await callApi(
             fetcher,
@@ -827,6 +1058,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
             results_count: data?.data?.results_count ?? null,
             mode: 'realtime',
             deprecated_params_ignored: legacyUsed(args),
+            vocabulary_warnings: warnings,
             cost: receipt('count_realtime', data),
             next_step_estimate: estimateBlock(book, 'realtime', data?.data?.results_count),
           });
@@ -875,7 +1107,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 3. get_balance
   loggedTool(
-    server,
+    registrar,
     'get_balance',
     `Account balance, month-to-date usage and THIS account's real per-operation prices. ${priceTag('count_database')} Call it before a batch of paid work (so you can tell the user what they can afford) and after (so you can report exactly what was spent). The prices it returns beat any number in a tool description — those are list prices.`,
     {
@@ -884,6 +1116,16 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         .describe('Also return the N most recent transactions (each shows the operation type and dollar amount).')
         .optional(),
       include_prices: z.boolean().describe("Include this account's per-operation prices. Default true.").optional(),
+      include_usage: z
+        .boolean()
+        .describe('Also return the month-to-date credit usage broken down by operation type. Free.')
+        .optional(),
+      include_token_analytics: z
+        .boolean()
+        .describe(
+          'Also return per-API-token request counts for the last 30 days (by endpoint and status). Free. Useful for answering "which integration is making these calls?".',
+        )
+        .optional(),
       timeout_ms: PAGING.timeout_ms,
     },
     async (args, extra) => {
@@ -920,6 +1162,24 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           );
           out.recent_transactions = txns?.data?.transactions ?? txns?.data ?? null;
         }
+        if (args?.include_usage === true) {
+          const usage = await callApi(
+            fetcher,
+            `${apiBase}${V1}/accounts/usage/`,
+            { method: 'GET', headers },
+            timeoutOf(args),
+          );
+          out.usage = usage?.data ?? null;
+        }
+        if (args?.include_token_analytics === true) {
+          const analytics = await callApi(
+            fetcher,
+            `${apiBase}${V1}/accounts/tokens/analytics/`,
+            { method: 'GET', headers },
+            timeoutOf(args),
+          );
+          out.token_analytics = analytics?.data ?? null;
+        }
         return result(out);
       } catch (err: unknown) {
         return apiError(err);
@@ -933,7 +1193,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 4. search_leads
   loggedTool(
-    server,
+    registrar,
     'search_leads',
     `Return leads (people) matching an ICP. ${priceTag('search_database')} Run count_leads first — it is free and tells you both the audience size and what this call will cost. Returns profile data only: no email or phone. Use generate_email / find_phone on the ids you actually want. Ordering is not stable, so paginate by passing ids you already have in exclude_ids rather than by offset.`,
     {
@@ -957,19 +1217,30 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const companyFilters = args?.company_filters;
         const twoLevel = companyFilters && Object.keys(companyFilters).length > 0;
         const path = twoLevel ? 'company-leads' : 'leads';
+
+        const gate = gateVocabulary(args, leadFilters, companyFilters);
+        if (gate.blocking.length > 0) return vocabularyBlocked(gate.blocking);
+
+        const book = await priceBook(Authorization, headers);
+        // Price the worst case in the mode we are most likely to end up in.
+        const likelyOp: Operation = (args?.mode ?? 'auto') === 'realtime' ? 'search_realtime' : 'search_database';
+        const overCeiling = spendCeiling(book, likelyOp, rows, args);
+        if (overCeiling) return overCeiling;
         // In the two-level shape the row limit belongs to the lead criteria.
         const body = twoLevel
           ? { company_search_criteria: companyFilters, lead_search_criteria: leadFilters }
           : leadFilters;
 
-        const { data, mode, escalated_because } = await callWithMode(fetcher, {
-          mode: args?.mode ?? 'auto',
-          dbUrl: `${apiBase}${V1}/search/database/${path}/`,
-          rtUrl: `${apiBase}${V1}/search/realtime/${path}/`,
-          body,
-          headers,
-          timeoutMs: timeoutOf(args),
-        });
+        const { data, mode, escalated_because } = await withProgress(extra, 'search_leads', () =>
+          callWithMode(fetcher, {
+            mode: args?.mode ?? 'auto',
+            dbUrl: `${apiBase}${V1}/search/database/${path}/`,
+            rtUrl: `${apiBase}${V1}/search/realtime/${path}/`,
+            body,
+            headers,
+            timeoutMs: timeoutOf(args),
+          }),
+        );
 
         const leads: any[] = data?.data?.leads ?? data?.data ?? [];
         const compact = args?.compact !== false;
@@ -986,8 +1257,10 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
                   'These filters do not exist in the cheaper cached index, so this call ran live and cost more per row. Tell the user if they care about cost.',
               }
             : {}),
+          vocabulary_warnings: gate.warnings.length > 0 ? gate.warnings : undefined,
           cost: receipt(mode === 'database' ? 'search_database' : 'search_realtime', data),
           leads: Array.isArray(leads) ? (compact ? leads.map(compactLead) : leads) : leads,
+          next_page_args: nextPageArgs(args, Array.isArray(leads) ? leads : []),
         });
       } catch (err: unknown) {
         return apiError(err);
@@ -997,7 +1270,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 5. search_companies
   loggedTool(
-    server,
+    registrar,
     'search_companies',
     `Return companies matching an ICP. ${priceTag('search_database')} Run count_companies first. Note that headcount_range is a snapshot taken when the record was indexed and can lag the company's current size; the filter itself is applied at query time.`,
     {
@@ -1013,14 +1286,25 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const headers = apiHeaders(Authorization);
         const body = toFilters(args);
         const rows = clampLimit(body);
-        const { data, mode, escalated_because } = await callWithMode(fetcher, {
-          mode: args?.mode ?? 'auto',
-          dbUrl: `${apiBase}${V1}/search/database/companies/`,
-          rtUrl: `${apiBase}${V1}/search/realtime/companies/`,
-          body,
-          headers,
-          timeoutMs: timeoutOf(args),
-        });
+
+        const gate = gateVocabulary(args, body);
+        if (gate.blocking.length > 0) return vocabularyBlocked(gate.blocking);
+
+        const book = await priceBook(Authorization, headers);
+        const likelyOp: Operation = (args?.mode ?? 'auto') === 'realtime' ? 'search_realtime' : 'search_database';
+        const overCeiling = spendCeiling(book, likelyOp, rows, args);
+        if (overCeiling) return overCeiling;
+
+        const { data, mode, escalated_because } = await withProgress(extra, 'search_companies', () =>
+          callWithMode(fetcher, {
+            mode: args?.mode ?? 'auto',
+            dbUrl: `${apiBase}${V1}/search/database/companies/`,
+            rtUrl: `${apiBase}${V1}/search/realtime/companies/`,
+            body,
+            headers,
+            timeoutMs: timeoutOf(args),
+          }),
+        );
         const companies: any[] = data?.data?.companies ?? data?.data ?? [];
         const compact = args?.compact !== false;
         return result({
@@ -1035,8 +1319,10 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
                 escalation_note: 'Ran live because those filters are realtime-only, so this cost more per row.',
               }
             : {}),
+          vocabulary_warnings: gate.warnings.length > 0 ? gate.warnings : undefined,
           cost: receipt(mode === 'database' ? 'search_database' : 'search_realtime', data),
           companies: Array.isArray(companies) ? (compact ? companies.map(compactCompany) : companies) : companies,
+          next_page_args: nextPageArgs(args, Array.isArray(companies) ? companies : []),
         });
       } catch (err: unknown) {
         return apiError(err);
@@ -1046,7 +1332,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 6. preview_leads
   loggedTool(
-    server,
+    registrar,
     'preview_leads',
     `Cheap look at the actual people behind a count, before committing to a full search. ${priceTag('preview')} Preview rows carry a Generect \`id\`, so the intended flow is: preview many → pick the few that fit → enrich_lead / generate_email only on those. Per the API contract preview rows are masked (no LinkedIn URL, domain, email or phone); if your account returns more than that, treat it as a bonus and not something to rely on.`,
     {
@@ -1058,10 +1344,18 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         .describe('Optional company-level filters for a two-level ICP.')
         .optional(),
       compact: compactParam('lead'),
+      count_only: z
+        .boolean()
+        .describe(
+          'Return just how many leads the preview index holds for these filters and spend nothing. Free. This is a second opinion on count_leads: preview and cached search are different indexes and can disagree.',
+        )
+        .optional(),
       limit_by: PAGING.limit_by,
       offset_by: PAGING.offset_by,
       limit: PAGING.limit,
       timeout_ms: PAGING.timeout_ms,
+      confirm_spend_usd: PAGING.confirm_spend_usd,
+      allow_unlisted_values: LEAD_FILTERS.allow_unlisted_values,
     },
     async (args, extra) => {
       try {
@@ -1075,6 +1369,30 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         if (args?.company_filters && Object.keys(args.company_filters).length > 0) {
           body.company_search_criteria = args.company_filters;
         }
+
+        const gate = gateVocabulary(args, leadFilters, args?.company_filters);
+        if (gate.blocking.length > 0) return vocabularyBlocked(gate.blocking);
+        const warnings = gate.warnings.length > 0 ? gate.warnings : undefined;
+
+        if (args?.count_only === true) {
+          const counted = await callApi(
+            fetcher,
+            `${apiBase}${V1}/preview/leads/count/`,
+            { method: 'POST', headers, body: JSON.stringify(body) },
+            timeoutOf(args),
+          );
+          return result({
+            results_count: counted?.data?.count ?? counted?.data?.results_count ?? null,
+            mode: 'preview',
+            vocabulary_warnings: warnings,
+            cost: receipt('count_database', counted),
+          });
+        }
+
+        const book = await priceBook(Authorization, headers);
+        const overCeiling = spendCeiling(book, 'preview', rows, args);
+        if (overCeiling) return overCeiling;
+
         const data = await callApi(
           fetcher,
           `${apiBase}${V1}/preview/leads/`,
@@ -1093,8 +1411,10 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           ...(Array.isArray(leads) && leads.length > rows
             ? { api_returned_more_than_requested: leads.length, note: 'Extra rows were trimmed locally.' }
             : {}),
+          vocabulary_warnings: warnings,
           cost: receipt('preview', data),
           leads: Array.isArray(trimmed) ? (compact ? trimmed.map(compactLead) : trimmed) : trimmed,
+          next_page_args: nextPageArgs(args, Array.isArray(trimmed) ? trimmed : []),
         });
       } catch (err: unknown) {
         return apiError(err);
@@ -1108,7 +1428,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 7. enrich_lead
   loggedTool(
-    server,
+    registrar,
     'enrich_lead',
     `Full profile for ONE known person, by Generect id, LinkedIn URL, or work email (reverse lookup). ${priceTag('enrich_database')} Not found costs nothing. Prefer the \`id\` from a search/preview result — it is the most accurate identifier. For many people at once use start_bulk_job.`,
     {
@@ -1151,7 +1471,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 8. enrich_company
   loggedTool(
-    server,
+    registrar,
     'enrich_company',
     `Full profile for ONE known company, by Generect id, LinkedIn URL, domain, or name. ${priceTag('enrich_database')} Not found costs nothing. Domain is the most reliable identifier after id; name matching is fuzzy.`,
     {
@@ -1195,7 +1515,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 9. get_lead_by_url — kept as the original tool name for existing integrations
   loggedTool(
-    server,
+    registrar,
     'get_lead_by_url',
     `Alias of enrich_lead for a LinkedIn profile URL, kept for backwards compatibility. ${priceTag('enrich_database')} Prefer enrich_lead — it also accepts a Generect id (cheaper to get right) or an email for reverse lookup.`,
     {
@@ -1233,7 +1553,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 10. resolve_profile
   loggedTool(
-    server,
+    registrar,
     'resolve_profile',
     `Reveal who is behind an anonymous LinkedIn profile link. ${priceTag('profile_resolve')} Takes the obfuscated links that Sales Navigator leaves in exports, CRMs and ad platforms — \`linkedin.com/in/ACwAA…\` — plus Sales Navigator lead URLs, bare profile ids and urns, and returns the real profile URL and identity. Pass \`profiles\` (up to 50) to do a batch in one call. The \`id\` it returns is the same identifier enrich_lead, generate_email and find_phone accept, so this is the cheap first step before spending on a full record. Returns identity only — no location, company or work history; use enrich_lead for those. The numeric member id is NOT accepted as input (LinkedIn answers 403 to it); it comes back as \`linkedin_id\`.`,
     {
@@ -1309,7 +1629,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 11. generate_email
   loggedTool(
-    server,
+    registrar,
     'generate_email',
     `Find and verify a work email. ${priceTag('email_find')} Identify the person by lead_id (best), LinkedIn URL, or first+last+domain. \`candidates\` resolves several people in one call; more than 10 is routed to an async bulk job instead, which returns a job_id for get_bulk_job.`,
     {
@@ -1394,7 +1714,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 12. validate_email
   loggedTool(
-    server,
+    registrar,
     'validate_email',
     `Check deliverability of emails you already have. ${priceTag('email_validate')} This is the one operation where EVERY submitted address is billed — the verdict is the deliverable. Never validate an address that generate_email just returned as valid; it is already verified.`,
     {
@@ -1426,7 +1746,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 13. find_phone
   loggedTool(
-    server,
+    registrar,
     'find_phone',
     `Find a phone number for one person. ${priceTag('phone_find')} THE MOST EXPENSIVE OPERATION HERE — roughly 20x an email lookup. Do not call it speculatively or across a list; confirm with the user first, and only for people they have already qualified. Use start_bulk_job for an approved list.`,
     {
@@ -1481,7 +1801,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 14. start_bulk_job
   loggedTool(
-    server,
+    registrar,
     'start_bulk_job',
     'Submit up to 50 records for asynchronous processing and get a job_id back. BILLABLE at the same per-record rate as the single-record tool — and the whole cost is RESERVED at submit time, so a submitted job keeps running (and keeps charging) even if you stop polling. Only submit a list the user has approved. Poll with get_bulk_job, or register a webhook to be told when it finishes.',
     {
@@ -1498,6 +1818,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         .describe('Enrich jobs only: cached (cheaper) or live. Default "database".')
         .optional(),
       timeout_ms: PAGING.timeout_ms,
+      confirm_spend_usd: PAGING.confirm_spend_usd,
     },
     async (args, extra) => {
       try {
@@ -1512,6 +1833,17 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const body = isEnrich
           ? { [args.job_type === 'enrich_leads' ? 'leads' : 'companies']: items }
           : { leads: items };
+        const bookBefore = await priceBook(Authorization, headers);
+        const opBefore: Operation = isEnrich
+          ? mode === 'realtime'
+            ? 'enrich_realtime'
+            : 'enrich_database'
+          : (route.op as Operation);
+        // The whole cost is reserved at submit time, so the ceiling has to be
+        // checked BEFORE the job exists — afterwards there is nothing to undo.
+        const overCeiling = spendCeiling(bookBefore, opBefore, items.length, args);
+        if (overCeiling) return overCeiling;
+
         const data = await callApi(
           fetcher,
           `${apiBase}${route.submit(mode)}`,
@@ -1543,11 +1875,13 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 15. get_bulk_job
   loggedTool(
-    server,
+    registrar,
     'get_bulk_job',
     `Status and results of a bulk job. ${priceTag('count_database')} Polling is free — the work was already billed at submit time. Poll every few seconds, not in a tight loop.`,
     {
-      job_type: z.enum(['email_find', 'phone_find', 'enrich_leads', 'enrich_companies']).describe('Same job_type used at submit.'),
+      job_type: z
+        .enum(['email_find', 'phone_find', 'enrich_leads', 'enrich_companies'])
+        .describe('Same job_type used at submit.'),
       job_id: z.string().describe('job_id returned by start_bulk_job.'),
       timeout_ms: PAGING.timeout_ms,
     },
@@ -1578,7 +1912,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 16. manage_webhooks
   loggedTool(
-    server,
+    registrar,
     'manage_webhooks',
     `List, create, update, delete or test webhook endpoints for bulk-job completion. ${priceTag('count_database')} Use this instead of long polling in scheduled/unattended workflows: register once, then let the completion event wake your job up.`,
     {
@@ -1623,7 +1957,11 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
               {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ url: args.url, events: args.events, ...(args.secret ? { secret: args.secret } : {}) }),
+                body: JSON.stringify({
+                  url: args.url,
+                  events: args.events,
+                  ...(args.secret ? { secret: args.secret } : {}),
+                }),
               },
               timeoutOf(args),
             );
@@ -1674,7 +2012,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
 
   // 17. health
   loggedTool(
-    server,
+    registrar,
     'health',
     `Liveness check. ${priceTag('count_database')} Confirms the MCP server is up, reports its version, and (unless you disable it) verifies the credential against a free account endpoint. It never touches a paid data endpoint, so it is safe to call from a monitor.`,
     {
@@ -1721,6 +2059,21 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
       return result(out);
     },
   );
+
+  // Nothing is visible to a client until this runs — see createRegistrar.
+  registrar.flush();
+
+  // Vocabularies, live prices and account state as readable resources, plus the
+  // workflow prompts. Both degrade to a no-op against a server double that does
+  // not implement them, so the tool tests stay unaffected.
+  registerResources(server, {
+    fetcher,
+    apiBase,
+    resolveAuthHeader,
+    apiHeaders,
+    priceBook: (authorization, headers) => priceBook(authorization, headers),
+  });
+  registerPrompts(server);
 }
 
 /**
