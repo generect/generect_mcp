@@ -128,6 +128,37 @@ pm2 logs generect-mcp --err                          # errors only
 grep tool_call ~/.pm2/logs/generect-mcp-out.log      # only LLM tool inputs
 ```
 
+### Test mode
+
+Generect's API picks live or test mode from the **key**, not the URL — so this
+server needs no separate deployment and no extra tool. Paste a test key
+(`test_…`, created at
+[beta.generect.com/settings/api](https://beta.generect.com/settings/api)) into
+the same config and every tool answers with fictional data, at the speed the
+real endpoint runs, showing the price the real call would have cost, charging
+nothing.
+
+```json
+{
+  "mcpServers": {
+    "generect": {
+      "command": "mcp-remote",
+      "args": ["https://mcp.generect.com/mcp", "--header", "Authorization: Bearer test_YOUR_TEST_KEY"]
+    }
+  }
+}
+```
+
+Every result from a test key carries `test_mode: true` and a notice telling the
+model the people are fictional. That is not decoration. An agent handed twelve
+invented prospects with no marker will summarise them as twelve prospects, and
+the person reading the summary has no way to tell — the likeliest failure of
+test mode in an agent channel is a confident report about people who do not
+exist. The marker is added centrally, so no tool can forget it.
+
+See [Test mode](https://docs.generect.com/api-reference/test-mode) for the magic
+inputs that force a 402, a 429 or a timeout on demand.
+
 ### Tools
 
 Every tool states in its own description whether it is free or billable, and every

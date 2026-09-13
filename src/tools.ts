@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
 import { parseAuthHeader } from './auth/parse.js';
 import { toAuthHeader } from './auth/credential.js';
+import { annotate as annotateTestMode, isTestRequest } from './testmode.js';
 import { VERSION } from './version.js';
 import { fetchPriceBook, priceTag, receipt, estimate, round, type Operation, type PriceBook } from './pricing.js';
 
@@ -92,11 +93,16 @@ function loggedTool(
     const started = Date.now();
     logEvent('tool_call', { reqId, tool: name, input: redact(args) });
     try {
-      const result = await handler(args, extra);
+      const handled = await handler(args, extra);
+      // Annotated here, once, rather than in each of the ~25 tool bodies: a
+      // marker that a tool can forget to add is a marker that will be missing
+      // from exactly the tool where it mattered. See src/testmode.ts.
+      const result = (await isTestRequest(extra)) ? annotateTestMode(handled) : handled;
       logEvent('tool_result', {
         reqId,
         tool: name,
         ms: Date.now() - started,
+        test_mode: result !== handled,
         output: redact(previewResult(result)),
       });
       return result;
