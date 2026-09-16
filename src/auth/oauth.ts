@@ -144,7 +144,7 @@ async function validateApiToken(token: string): Promise<{ valid: boolean; error?
     });
 
     if (res.status === 401 || res.status === 403) {
-      return { valid: false, error: 'Invalid API token. Please check your token at beta.generect.com' };
+      return { valid: false, error: 'Invalid API token. Please check your token at app.generect.com' };
     }
 
     if (res.ok) {

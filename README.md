@@ -9,7 +9,7 @@ response reports what was actually charged.
 
 ### Get Your API Key
 
-Sign up and get your API key at [https://beta.generect.com](https://beta.generect.com)
+Sign up and get your API key at [https://app.generect.com](https://app.generect.com)
 
 ### Remote MCP Server (OAuth - Recommended)
 
@@ -30,7 +30,7 @@ Use our hosted MCP server with any OAuth-compliant MCP client:
 
 When you first connect, the client will initiate an OAuth flow:
 1. You'll be redirected to the authorization page
-2. Enter your Generect API token from [beta.generect.com](https://beta.generect.com)
+2. Enter your Generect API token from [app.generect.com](https://app.generect.com)
 3. Authorize the client to access your API
 4. The client receives an access token and can now use the MCP tools
 
@@ -133,7 +133,7 @@ grep tool_call ~/.pm2/logs/generect-mcp-out.log      # only LLM tool inputs
 Generect's API picks live or test mode from the **key**, not the URL — so this
 server needs no separate deployment and no extra tool. Paste a test key
 (`test_…`, created at
-[beta.generect.com/settings/api](https://beta.generect.com/settings/api)) into
+[app.generect.com/settings/api](https://app.generect.com/settings/api)) into
 the same config and every tool answers with fictional data, at the speed the
 real endpoint runs, showing the price the real call would have cost, charging
 nothing.
