@@ -263,7 +263,7 @@ export function renderLoginPage(params: {
             <label for="api_token">Generect API Token</label>
             <input type="password" id="api_token" name="api_token" placeholder="Enter your API token" autocomplete="off">
             <div class="hint">
-              Get your API token from <a href="https://beta.generect.com" target="_blank">beta.generect.com</a>
+              Get your API token from <a href="https://app.generect.com" target="_blank">app.generect.com</a>
             </div>
           </div>
         </details>
