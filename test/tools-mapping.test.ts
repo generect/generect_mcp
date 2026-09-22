@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { z } from 'zod';
 import { registerTools } from '../src/tools.ts';
 import { resetPriceBookCache } from '../src/pricing.ts';
+import { TOOL_META, TOOL_ORDER } from '../src/tool-meta.ts';
 
 // Register the tools against a fake McpServer that captures handlers, and a fake
 // fetcher driven by URL matchers. This exercises the real args -> Generect-API
@@ -121,10 +123,7 @@ test('count_leads: company_filters switch to the two-level company-leads count',
       body: { data: { results_count: 42 }, meta: { amount_charged: 0 } },
     },
   ]);
-  await tools.count_leads(
-    { job_titles: ['CEO'], company_filters: { industries: ['Software Development'] } },
-    EXTRA,
-  );
+  await tools.count_leads({ job_titles: ['CEO'], company_filters: { industries: ['Software Development'] } }, EXTRA);
   const call = calls.find(c => /count/.test(c.url))!;
   assert.equal(call.url, 'https://api.test/api/v1/search/database/company-leads/count/');
   assert.deepEqual(call.body, {
@@ -189,7 +188,10 @@ test('search_leads: cheap database endpoint, default row cap, compact projection
 });
 
 test('search_leads: limit alias maps to limit_by and is clamped to the max', async () => {
-  const { tools, calls } = harness([TIER_ROUTE, { match: /search\/database/, body: { data: { leads: [] }, meta: {} } }]);
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database/, body: { data: { leads: [] }, meta: {} } },
+  ]);
   await tools.search_leads({ job_titles: ['CEO'], limit: 5000 }, EXTRA);
   assert.equal(calls.find(c => /search/.test(c.url))!.body.limit_by, 100);
   assert.ok(!('limit' in calls.find(c => /search/.test(c.url))!.body), 'control alias is not forwarded raw');
@@ -313,7 +315,10 @@ test('generate_email: name+domain form is accepted and middle_name is forwarded'
     TIER_ROUTE,
     { match: /email\/find\//, body: { data: { email: 'j@stripe.com' }, meta: { amount_charged: 0.02 } } },
   ]);
-  await tools.generate_email({ first_name: 'Jordan', last_name: 'Ellis', domain: 'stripe.com', middle_name: 'Q' }, EXTRA);
+  await tools.generate_email(
+    { first_name: 'Jordan', last_name: 'Ellis', domain: 'stripe.com', middle_name: 'Q' },
+    EXTRA,
+  );
   assert.deepEqual(calls.find(c => /email\/find/.test(c.url))!.body, {
     first_name: 'Jordan',
     last_name: 'Ellis',
@@ -483,10 +488,7 @@ test('health: verifies the credential on a FREE endpoint, never a data endpoint'
 });
 
 test('health: a dead credential is reported as not-ok instead of throwing', async () => {
-  const { tools } = harness([
-    TIER_ROUTE,
-    { match: /accounts\/me/, status: 401, body: { detail: 'Invalid token.' } },
-  ]);
+  const { tools } = harness([TIER_ROUTE, { match: /accounts\/me/, status: 401, body: { detail: 'Invalid token.' } }]);
   const r = out(await tools.health({}, EXTRA));
   assert.equal(r.ok, false);
   assert.equal(r.credential_valid, false);
@@ -583,7 +585,9 @@ test('search_companies reports the removed fallback_from_leads flag', async () =
     TIER_ROUTE,
     { match: /search\/database\/companies/, body: { data: { companies: [] }, meta: { amount_charged: 0 } } },
   ]);
-  const r = out(await tools.search_companies({ industries: ['Software Development'], fallback_from_leads: true }, EXTRA));
+  const r = out(
+    await tools.search_companies({ industries: ['Software Development'], fallback_from_leads: true }, EXTRA),
+  );
   assert.deepEqual(Object.keys(r.deprecated_params_ignored), ['fallback_from_leads']);
   assert.ok(!('fallback_from_leads' in calls.find(c => /search/.test(c.url))!.body));
 });
@@ -700,4 +704,292 @@ test('resolve_profile: the price survives a tier that does not list this service
   const r = out(await tools.resolve_profile({ url: 'x' }, EXTRA));
   assert.equal(r.cost.amount_charged_usd, 0.0005, 'the receipt always quotes the biller, never our arithmetic');
   assert.match(r.cost.billed, /per RESOLVED profile/);
+});
+
+// ---------------------------------------------------------------------------
+// Vocabulary gate — the API does not validate industries or seniorities
+// ---------------------------------------------------------------------------
+
+test('count_leads: an unknown industry is refused locally with suggestions, nothing is sent', async () => {
+  const { tools, calls } = harness([TIER_ROUTE]);
+  const r = out(await tools.count_leads({ job_titles: ['CEO'], company_industries: ['Fintech'] }, EXTRA));
+  assert.equal(r.status, 'not_sent');
+  assert.equal(r.cost.amount_charged_usd, 0);
+  assert.equal(r.blocked_by_vocabulary.length, 1);
+  assert.equal(r.blocked_by_vocabulary[0].field, 'company_industries');
+  assert.ok(r.blocked_by_vocabulary[0].did_you_mean.includes('Financial Services'));
+  assert.ok(!calls.some(c => /search/.test(c.url)), 'no API call for a value the API would answer with a silent 0');
+});
+
+test('count_leads: allow_unlisted_values overrides the guard', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads\/count/, body: { data: { results_count: 3 }, meta: { amount_charged: 0 } } },
+  ]);
+  const r = out(
+    await tools.count_leads(
+      { job_titles: ['CEO'], company_industries: ['Fintech'], allow_unlisted_values: true },
+      EXTRA,
+    ),
+  );
+  assert.equal(r.results_count, 3);
+  assert.deepEqual(calls.find(c => /count/.test(c.url))!.body.company_industries, ['Fintech']);
+});
+
+test('search_leads: a mis-spelled industry is corrected to the canonical name, not sent as typed', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads/, body: { data: { leads: [] }, meta: { amount_charged: 0 } } },
+  ]);
+  const r = out(await tools.search_leads({ job_titles: ['CEO'], company_industries: ['software development'] }, EXTRA));
+  assert.deepEqual(
+    calls.find(c => /search/.test(c.url))!.body.company_industries,
+    ['Software Development'],
+    'exact matching means the typed casing would have returned 0',
+  );
+  assert.equal(r.vocabulary_warnings.length, 1);
+  assert.equal(r.vocabulary_warnings[0].canonical, 'Software Development');
+});
+
+test('search_leads: an unknown seniority is a warning, not a refusal (the engine matches loosely)', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads/, body: { data: { leads: [] }, meta: { amount_charged: 0 } } },
+  ]);
+  const r = out(await tools.search_leads({ job_titles: ['CEO'], seniorities: ['Owner'] }, EXTRA));
+  assert.ok(
+    calls.some(c => /search/.test(c.url)),
+    'the call still goes out',
+  );
+  assert.equal(r.vocabulary_warnings[0].field, 'seniorities');
+  assert.ok(r.vocabulary_warnings[0].did_you_mean.includes('Owner / Partner'));
+});
+
+test('count_companies: a bad headcount bucket is caught locally instead of costing a 400 round trip', async () => {
+  const { tools, calls } = harness([TIER_ROUTE]);
+  const r = out(await tools.count_companies({ industries: ['Software Development'], headcounts: ['50-200'] }, EXTRA));
+  assert.equal(r.status, 'not_sent');
+  assert.ok(r.blocked_by_vocabulary[0].did_you_mean.includes('51-200'));
+  assert.ok(!calls.some(c => /count/.test(c.url)));
+});
+
+// ---------------------------------------------------------------------------
+// Spend ceiling
+// ---------------------------------------------------------------------------
+
+test('start_bulk_job: a 50-phone job is refused above the per-call ceiling, before the job exists', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /phone\/find\/bulk/, body: { data: null, meta: { job_id: 'j' } } },
+  ]);
+  const items = Array.from({ length: 50 }, (_, i) => ({ lead_id: `id-${i}` }));
+  const r = out(await tools.start_bulk_job({ job_type: 'phone_find', items }, EXTRA));
+  assert.equal(r.status, 'not_sent');
+  assert.equal(r.spend_guard.worst_case_usd, 20, '50 x $0.40');
+  assert.ok(!calls.some(c => /bulk/.test(c.url)), 'the cost is reserved at submit time — there is nothing to undo');
+});
+
+test('start_bulk_job: explicit confirm_spend_usd lets the same job through', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /phone\/find\/bulk/, body: { data: null, meta: { job_id: 'j' } } },
+  ]);
+  const items = Array.from({ length: 50 }, (_, i) => ({ lead_id: `id-${i}` }));
+  const r = out(await tools.start_bulk_job({ job_type: 'phone_find', items, confirm_spend_usd: 20 }, EXTRA));
+  assert.equal(r.submitted, 50);
+  assert.ok(calls.some(c => /bulk/.test(c.url)));
+});
+
+// ---------------------------------------------------------------------------
+// Endpoint coverage added in 0.8.x
+// ---------------------------------------------------------------------------
+
+test('count_leads: a realtime two-level count is explained, not requested (the endpoint does not exist)', async () => {
+  const { tools, calls } = harness([TIER_ROUTE]);
+  const r = out(
+    await tools.count_leads(
+      { job_titles: ['CEO'], company_filters: { industries: ['Software Development'] }, mode: 'realtime' },
+      EXTRA,
+    ),
+  );
+  assert.equal(r.mode, 'none');
+  assert.match(r.why, /does not exist in the API/);
+  assert.ok(!calls.some(c => /company-leads/.test(c.url)));
+});
+
+test('preview_leads: count_only uses the free preview count endpoint', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /preview\/leads\/count/, body: { data: { count: 49846 }, meta: { amount_charged: 0 } } },
+  ]);
+  const r = out(await tools.preview_leads({ job_titles: ['CEO'], count_only: true }, EXTRA));
+  assert.equal(calls.find(c => /preview/.test(c.url))!.url, 'https://api.test/api/v1/preview/leads/count/');
+  assert.equal(r.results_count, 49846);
+  assert.equal(r.cost.amount_charged_usd, 0);
+  assert.ok(!('count_only' in calls.find(c => /preview/.test(c.url))!.body.lead_search_criteria));
+});
+
+test('get_balance: usage and token analytics are fetched only when asked for', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /accounts\/me/, body: { data: { email: 'a@b.com', credits: { balance: 1 } } } },
+    { match: /accounts\/usage/, body: { data: { period: '2026-09', total_credits: 10 } } },
+    { match: /tokens\/analytics/, body: { data: { total_requests: 42, tokens: [] } } },
+  ]);
+  const plain = out(await tools.get_balance({}, EXTRA));
+  assert.equal(plain.usage, undefined);
+  assert.ok(!calls.some(c => /usage|analytics/.test(c.url)));
+
+  const full = out(await tools.get_balance({ include_usage: true, include_token_analytics: true }, EXTRA));
+  assert.equal(full.usage.total_credits, 10);
+  assert.equal(full.token_analytics.total_requests, 42);
+});
+
+test('search_leads: next_page_args accumulates the ids already seen', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    {
+      match: /search\/database\/leads/,
+      body: {
+        data: {
+          leads: [
+            { ...LEAD_ROW, id: 'a' },
+            { ...LEAD_ROW, id: 'b' },
+          ],
+        },
+        meta: { amount_charged: 0.02 },
+      },
+    },
+  ]);
+  const r = out(await tools.search_leads({ job_titles: ['CEO'], exclude_ids: ['seen-1'] }, EXTRA));
+  assert.deepEqual(r.next_page_args.exclude_ids, ['seen-1', 'a', 'b']);
+});
+
+// ---------------------------------------------------------------------------
+// Protocol surface
+// ---------------------------------------------------------------------------
+
+test('tools are registered in the documented deterministic order', async () => {
+  const order: string[] = [];
+  const server: any = {
+    registerTool: (name: string) => order.push(name),
+  };
+  registerTools(server, (async () => new Response('{}')) as any, 'https://api.test', '');
+  assert.deepEqual(order, [...TOOL_ORDER], 'tools/list order must be stable for client + prompt caching');
+});
+
+test('every tool declares a title, annotations and an output schema', () => {
+  for (const name of TOOL_ORDER) {
+    const meta = TOOL_META[name];
+    assert.ok(meta, `${name} has no metadata`);
+    assert.ok(meta.title.length > 0, `${name} has no title`);
+    assert.equal(typeof meta.annotations.openWorldHint, 'boolean', `${name} openWorldHint`);
+    assert.ok(Object.keys(meta.outputSchema).length > 0, `${name} has an empty output schema`);
+  }
+});
+
+test('only webhook management is declared as write/destructive', () => {
+  const writers = TOOL_ORDER.filter(n => TOOL_META[n].annotations.readOnlyHint === false);
+  assert.deepEqual(writers, ['manage_webhooks']);
+  assert.equal(TOOL_META.manage_webhooks.annotations.destructiveHint, true);
+});
+
+test('idempotency is only claimed for tools that cannot charge', () => {
+  const idempotent = TOOL_ORDER.filter(n => TOOL_META[n].annotations.idempotentHint === true);
+  assert.deepEqual(idempotent.sort(), ['count_companies', 'count_leads', 'get_balance', 'get_bulk_job', 'health']);
+});
+
+test("every successful payload validates against the tool's own output schema", async () => {
+  // The SDK validates structuredContent against outputSchema on every call and
+  // turns a mismatch into a hard protocol error, so a schema that is wrong
+  // breaks a working tool. This asserts the two agree.
+  const GENERIC = [
+    TIER_ROUTE,
+    { match: /accounts\/me/, body: { data: { email: 'a@b.com', credits: { balance: 5 }, preview_tier: true } } },
+    { match: /accounts\/usage/, body: { data: { period: '2026-09' } } },
+    { match: /tokens\/analytics/, body: { data: { total_requests: 0, tokens: [] } } },
+    { match: /count/, body: { data: { results_count: 5, count: 5 }, meta: { amount_charged: 0 } } },
+    { match: /preview\/leads/, body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.002 } } },
+    {
+      match: /search\/database\/companies/,
+      body: { data: { companies: [{ id: '1', name: 'X' }] }, meta: { amount_charged: 0.01 } },
+    },
+    {
+      match: /search\/database/,
+      body: { data: { leads: [LEAD_ROW], results_count: 9 }, meta: { amount_charged: 0.01 } },
+    },
+    { match: /enrich\//, body: { data: LEAD_ROW, meta: { amount_charged: 0.01 } } },
+    {
+      match: /email\/validate/,
+      body: { data: [{ email: 'a@b.com', result: 'valid' }], meta: { amount_charged: 0.005 } },
+    },
+    { match: /email\/find\/bulk/, body: { data: null, meta: { job_id: 'j', status: 'pending' } } },
+    { match: /email\/find/, body: { data: { email: 'a@b.com' }, meta: { amount_charged: 0.02 } } },
+    { match: /phone\/find\/bulk/, body: { data: null, meta: { job_id: 'j' } } },
+    { match: /phone\/find/, body: { data: { phone: '+1' }, meta: { amount_charged: 0.4 } } },
+    { match: /profile\/resolve/, body: { data: { id: 'ACwAAA1' }, meta: { amount_charged: 0.0005 } } },
+    { match: /webhooks/, body: { data: [] } },
+    { match: /bulk\//, body: { data: [], meta: { status: 'completed' } } },
+  ];
+  const ARGS: Record<string, any> = {
+    count_leads: { job_titles: ['CEO'] },
+    count_companies: { industries: ['Software Development'] },
+    get_balance: { include_usage: true, include_token_analytics: true, include_transactions: 5 },
+    health: {},
+    preview_leads: { job_titles: ['CEO'] },
+    search_leads: { job_titles: ['CEO'] },
+    search_companies: { industries: ['Software Development'] },
+    resolve_profile: { url: 'https://www.linkedin.com/in/ACwAAA1' },
+    enrich_lead: { id: 'ACwAAA1' },
+    enrich_company: { domain: 'stripe.com' },
+    get_lead_by_url: { url: 'https://linkedin.com/in/x' },
+    generate_email: { lead_id: 'ACwAAA1' },
+    validate_email: { emails: ['a@b.com'] },
+    find_phone: { lead_id: 'ACwAAA1' },
+    start_bulk_job: { job_type: 'email_find', items: [{ lead_id: 'a' }] },
+    get_bulk_job: { job_type: 'email_find', job_id: 'j' },
+    manage_webhooks: { action: 'list' },
+  };
+  const { tools } = harness(GENERIC as any);
+  for (const name of TOOL_ORDER) {
+    assert.ok(ARGS[name], `no probe args for ${name}`);
+    const res: any = await tools[name](ARGS[name], EXTRA);
+    if (res?.isError) continue; // the SDK skips validation on error results
+    const schema = z.object(TOOL_META[name].outputSchema);
+    const parsed = schema.safeParse(res.structuredContent);
+    assert.ok(
+      parsed.success,
+      `${name} payload does not match its outputSchema: ${JSON.stringify(parsed.success ? {} : parsed.error.issues)}`,
+    );
+  }
+});
+
+test('a realtime search sends progress heartbeats when the client asked for them', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /search\/realtime\/leads/, body: { data: { leads: [] }, meta: { amount_charged: 0 } } },
+  ]);
+  const sent: any[] = [];
+  const extra = {
+    ...EXTRA,
+    _meta: { progressToken: 'tok-1' },
+    sendNotification: async (n: any) => {
+      sent.push(n);
+    },
+  };
+  await tools.search_leads({ job_titles: ['CEO'], mode: 'realtime' }, extra);
+  assert.ok(sent.length >= 1, 'expected at least a "started" progress notification');
+  assert.equal(sent[0].method, 'notifications/progress');
+  assert.equal(sent[0].params.progressToken, 'tok-1');
+});
+
+test('no progress notifications without a progress token', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /search\/realtime\/leads/, body: { data: { leads: [] }, meta: { amount_charged: 0 } } },
+  ]);
+  const sent: any[] = [];
+  const extra = { ...EXTRA, sendNotification: async (n: any) => void sent.push(n) };
+  await tools.search_leads({ job_titles: ['CEO'], mode: 'realtime' }, extra);
+  assert.equal(sent.length, 0);
 });
