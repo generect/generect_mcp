@@ -23,6 +23,15 @@ jobs:
       - run: npm run check-version
       - run: npm run build
       - run: npm test
+      # Ask the registry itself whether server.json would be accepted. Its limits
+      # (e.g. description <= 100 chars) are only enforced at publish time, which
+      # runs after the merge — too late to fix in review.
+      - name: Validate server.json against the MCP Registry
+        env:
+          PUBLISHER_VERSION: v1.8.1
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/${PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" | tar xz
+          ./mcp-publisher validate
 
   docker:
     if: github.ref == 'refs/heads/main'
