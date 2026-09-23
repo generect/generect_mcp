@@ -10,7 +10,7 @@ served 0.1.2. Outside reviewers were judging a year-old build.
 
 | Surface | What users get from it | How it updates |
 |---------|------------------------|----------------|
-| `https://mcp.generect.com/mcp` | Remote MCP (Claude, ChatGPT, Agent Builder, Cursor) | Deploy on the host (PM2) |
+| `https://mcp.generect.com/mcp` | Remote MCP (Claude, ChatGPT, Agent Builder, Cursor) | `deploy-prod.yml` after a green `ci` on `main` (SSH forced command → `deploy/remote-deploy.sh`; gated on repo variable `MCP_DEPLOY_ENABLED`) |
 | npm `generect-ultimate-mcp` | `npx generect-ultimate-mcp@latest` — the local install in our docs | `publish-npm.yml` (needs `NPM_TOKEN`) |
 | MCP Registry `com.generect/generect-mcp` | Clients that resolve servers by registry id | `publish-mcp.yml` on `server.json` change (needs `MCP_REGISTRY_PRIVATE_KEY`) |
 | Directories (Glama, mcp.so, …) | Discovery | Mirror the MCP Registry — fix the registry, not each directory |
@@ -23,7 +23,7 @@ served 0.1.2. Outside reviewers were judging a year-old build.
 3. Free live check: `npm run health -- <key>` — it fails if a "free" endpoint charges.
 4. Merge to `main`. `publish-mcp.yml` fires on the `server.json` change.
 5. Cut a GitHub Release → `publish-npm.yml` publishes to npm.
-6. Deploy the remote server.
+6. The remote server deploys itself once `ci` is green on `main` — check the `Deploy MCP to production` run.
 7. **Verify all three**, do not assume:
 
 ```bash

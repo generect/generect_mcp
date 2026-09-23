@@ -349,15 +349,25 @@ Then use:
 
 ### Deployment (production, PM2)
 
-The hosted server (`https://mcp.generect.com`) runs under **PM2** on the host, fronted by nginx (TLS). The process is defined by [`ecosystem.config.js`](./ecosystem.config.js):
+The hosted server (`https://mcp.generect.com`) runs under **PM2** as `mcp_user` on
+the host, fronted by nginx (TLS), defined by [`ecosystem.config.cjs`](./ecosystem.config.cjs).
 
-```bash
-npm ci && npm run build
-pm2 start ecosystem.config.js      # or: pm2 reload ecosystem.config.js
-pm2 save                           # persist the process list for reboot
-# once, as root, so it survives reboots:
-#   pm2 startup systemd -u mcp_user --hp /home/mcp_user
-```
+**Deploys are automatic.** A green `ci` run on `main` triggers
+[`deploy-prod.yml`](.github/workflows/deploy-prod.yml), which reaches the host over
+SSH with a key that can run exactly one thing —
+[`deploy/remote-deploy.sh`](deploy/remote-deploy.sh) — and verifies the public
+endpoint afterwards. The script:
+
+- only ever brings the host to the **tip of `main`** (never an older commit);
+- refuses to deploy over uncommitted edits on the host, or to start a second
+  pm2 instance;
+- restarts with the environment pm2 already holds (`reload`, not `--update-env`);
+- **rolls back automatically** to what was running if the new build does not
+  come up with the expected version within 60 s.
+
+`deploy/sandbox-test.sh` exercises all of that against a throwaway copy of the
+repo with its own pm2 — run it after touching the deploy script. One-time host
+setup is [`deploy/bootstrap-chronos.sh`](deploy/bootstrap-chronos.sh) (as root).
 
 **Single instance only.** OAuth state (registered clients, auth codes) and MCP sessions are held in memory, so the server must run as one instance. Scaling horizontally requires a shared store (e.g. Redis) first — see `ecosystem.config.js`.
 

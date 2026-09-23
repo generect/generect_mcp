@@ -1,0 +1,26 @@
+name: deploy script test
+
+# deploy/remote-deploy.sh runs as a forced command on the production host, where
+# a bug means an outage or a rollback that does not happen. Exercise it end to
+# end (cold start, env preservation, refusals, no-downgrade, rollback) in a
+# sandbox whenever it changes.
+on:
+  pull_request:
+    paths: ['deploy/**', 'ecosystem.config.cjs', '.github/workflows/deploy-script-test.yml']
+  push:
+    branches: [main]
+    paths: ['deploy/**', 'ecosystem.config.cjs']
+
+permissions:
+  contents: read
+
+jobs:
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: bash deploy/sandbox-test.sh
