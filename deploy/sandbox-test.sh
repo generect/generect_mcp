@@ -33,8 +33,11 @@ OLD="$(git -C "$S/origin.git" rev-list --first-parent main | sed -n '5p')"   # a
 # Put the script under test onto the sandbox main, so after the first deploy it
 # runs from INSIDE the checkout it rewrites — exactly as on the host.
 mkdir -p "$S/work/deploy" && cp "$SCRIPT" "$S/work/deploy/remote-deploy.sh"
+# --allow-empty: once the script is merged, the copy is identical to what main
+# already holds, and a plain commit exits 1 ("nothing to commit") under set -e —
+# which failed this test on every push to main while passing on the PR.
 (cd "$S/work" && git add deploy/remote-deploy.sh &&
-  git -c user.email=t@t -c user.name=t commit -qm "script under test" && git push -q origin main)
+  git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "script under test" && git push -q origin main)
 TIP="$(git -C "$S/origin.git" rev-parse main)"
 git -C "$S/home/generect_mcp" checkout -q -B main "$OLD"
 # Production mode refuses to boot without real signing keys; the real host has
