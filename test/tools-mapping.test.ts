@@ -993,3 +993,178 @@ test('no progress notifications without a progress token', async () => {
   await tools.search_leads({ job_titles: ['CEO'], mode: 'realtime' }, extra);
   assert.equal(sent.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Free thin database search (api_parser search.v1.free_tier)
+// ---------------------------------------------------------------------------
+
+const THIN_LEAD = {
+  id: 'ACwAAT1',
+  first_name: 'Ada',
+  last_name: 'Byron',
+  full_name: 'Ada Byron',
+  job_title: 'CTO',
+  seniority: 'CXO',
+  location_name: 'London, United Kingdom',
+  location_country: 'United Kingdom',
+  location_city: 'London',
+  company_name: 'Analytical',
+  linkedin_company_id: '42',
+  company_industry: 'Software Development',
+  company_location_country: 'United Kingdom',
+  updated_at: '2026-09-01T00:00:00Z',
+};
+const FREE_TIER = { detail: 'thin', daily_rows: 2000, rows_used_today: 1, rows_left_today: 1999 };
+
+test('search_leads: database search is thin and free by default, and says so', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    {
+      match: /search\/database\/leads\//,
+      body: { data: { leads: [THIN_LEAD], results_count: 1 }, meta: { amount_charged: 0, free_tier: FREE_TIER } },
+    },
+  ]);
+  const r = out(await tools.search_leads({ job_titles: ['CTO'] }, EXTRA));
+  const call = calls.find(c => /search/.test(c.url))!;
+  assert.equal(call.body.detail, 'thin');
+  assert.equal(r.cost.operation, 'search_thin');
+  assert.equal(r.cost.amount_charged_usd, 0);
+  assert.deepEqual(r.free_tier, FREE_TIER);
+  assert.equal(r.detail, 'thin');
+  assert.equal(r.leads[0].location, 'London, United Kingdom', 'thin rows carry location_name, not location');
+  assert.equal(r.leads[0].linkedin_url, null);
+});
+
+test('search_leads: detail "full" sends no detail key and is billed as before', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads\//, body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.01 } } },
+  ]);
+  const r = out(await tools.search_leads({ job_titles: ['CEO'], detail: 'full' }, EXTRA));
+  assert.ok(!('detail' in calls.find(c => /search/.test(c.url))!.body));
+  assert.equal(r.cost.operation, 'search_database');
+  assert.equal(r.free_tier, undefined);
+});
+
+test('search_leads: an auto escalation drops detail — the live endpoint rejects it', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads\//, ...UNSUPPORTED('changed_jobs') },
+    { match: /search\/realtime\/leads\//, body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.04 } } },
+  ]);
+  const r = out(await tools.search_leads({ job_titles: ['CEO'], changed_jobs: true }, EXTRA));
+  const [db, rt] = calls.filter(c => /search/.test(c.url));
+  assert.equal(db.body.detail, 'thin');
+  assert.ok(!('detail' in rt.body), 'realtime body must not carry detail');
+  assert.equal(r.mode, 'realtime');
+  assert.equal(r.cost.operation, 'search_realtime');
+  assert.equal(r.free_tier, undefined);
+});
+
+test('search_leads: thin + realtime is refused locally, nothing is sent', async () => {
+  const { tools, calls } = harness([TIER_ROUTE]);
+  const r = out(await tools.search_leads({ job_titles: ['CEO'], mode: 'realtime', detail: 'thin' }, EXTRA));
+  assert.equal(r.status, 'not_sent');
+  assert.ok(!calls.some(c => /search/.test(c.url)));
+});
+
+test('search_leads: realtime without an explicit detail stays full and billed', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/realtime\/leads\//, body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.04 } } },
+  ]);
+  await tools.search_leads({ job_titles: ['CEO'], mode: 'realtime' }, EXTRA);
+  assert.ok(!('detail' in calls.find(c => /search/.test(c.url))!.body));
+});
+
+test('search_leads: two-level searches never send detail (company-leads has no thin tier)', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /company-leads/, body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.01 } } },
+  ]);
+  await tools.search_leads({ job_titles: ['CEO'], company_filters: { industries: ['Software Development'] } }, EXTRA);
+  const call = calls.find(c => /company-leads/.test(c.url))!;
+  assert.ok(!('detail' in call.body));
+  const refused = out(
+    await tools.search_leads(
+      { job_titles: ['CEO'], company_filters: { industries: ['Software Development'] }, detail: 'thin' },
+      EXTRA,
+    ),
+  );
+  assert.equal(refused.status, 'not_sent');
+});
+
+test('search_leads: a spent daily quota tells the agent to ask before paying', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    {
+      match: /search\/database\/leads\//,
+      status: 429,
+      body: {
+        status: 'error',
+        status_code: 429,
+        detail: 'Daily free search quota reached (2000 thin rows). It resets at 00:00 UTC.',
+      },
+    },
+  ]);
+  const r = await tools.search_leads({ job_titles: ['CEO'] }, EXTRA);
+  assert.equal(r.isError, true);
+  assert.match(out(r).next_step, /resets at 00:00 UTC/);
+  assert.match(out(r).next_step, /ask the user/);
+});
+
+test('search_leads: thin not enabled on the server is explained, not retried at full price', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    {
+      match: /search\/database\/leads\//,
+      status: 400,
+      body: { status: 'error', status_code: 400, detail: { detail: ['"thin" search is not enabled. Omit "detail".'] } },
+    },
+  ]);
+  const r = await tools.search_leads({ job_titles: ['CEO'] }, EXTRA);
+  assert.equal(r.isError, true);
+  assert.match(out(r).next_step, /detail "full" only if the user accepts/);
+  assert.equal(calls.filter(c => /search/.test(c.url)).length, 1, 'no silent full-price retry');
+});
+
+test('search_companies: thin by default; compact location is built from the HQ fields', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    {
+      match: /search\/database\/companies\//,
+      body: {
+        data: {
+          companies: [
+            {
+              id: '9',
+              name: 'Analytical',
+              industry: 'Software Development',
+              headcount_range: '11-50',
+              hq_country: 'United Kingdom',
+              hq_city: 'London',
+              company_type: 'Privately Held',
+              founded_year: 1843,
+            },
+          ],
+          results_count: 1,
+        },
+        meta: { amount_charged: 0, free_tier: FREE_TIER },
+      },
+    },
+  ]);
+  const r = out(await tools.search_companies({ industries: ['Software Development'] }, EXTRA));
+  assert.equal(calls.find(c => /search/.test(c.url))!.body.detail, 'thin');
+  assert.equal(r.companies[0].location, 'London, United Kingdom');
+  assert.equal(r.companies[0].domain, null);
+  assert.equal(r.cost.operation, 'search_thin');
+});
+
+test('count_leads: the next-step estimate mentions the free thin search', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads\/count/, body: { data: { results_count: 50 }, meta: { amount_charged: 0 } } },
+  ]);
+  const r = out(await tools.count_leads({ job_titles: ['CEO'] }, EXTRA));
+  assert.match(r.next_step_estimate.thin_search, /free/);
+});
