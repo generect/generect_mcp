@@ -92,7 +92,9 @@ const checks = [
         headers: { 'user-agent': 'Mozilla/5.0 generect-release-check' },
         signal: AbortSignal.timeout(15000),
       });
-      const html = await res.text();
+      // React renders the badge as `v<!-- -->0.1.0`; drop the comments first,
+      // then the first vX.Y.Z on the page is the release Glama shows as latest.
+      const html = (await res.text()).replace(/<!--.*?-->/g, '');
       const m = html.match(/\bv(\d+\.\d+\.\d+)\b/);
       return m ? m[1] : undefined; // undefined = could not read, not "wrong"
     },
