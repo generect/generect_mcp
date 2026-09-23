@@ -5,17 +5,57 @@ name: Publish to npm
 # it served 0.1.0 while the repo moved to 0.7.0 — a build with no row cap and a
 # billable health check. Publishing has to be automatic, not something one person
 # remembers to do.
+#
+# It used to wait for someone to cut a GitHub Release. Nobody did: on 2026-09-23
+# main was at 0.9.0 with zero releases, so npm and Glama (which mirrors npm) still
+# showed 0.1.0. A version bump merged to main is now the release: this tags it,
+# creates the GitHub Release, and publishes. Re-running on a version that is
+# already out is a no-op, not a failure.
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+    # The workflow file itself too, so merging a change here releases whatever
+    # main already declares instead of waiting for the next bump.
+    paths: [package.json, .github/workflows/publish-npm.yml]
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
 jobs:
+  release:
+    # Tag + GitHub Release for the version main declares. Created with the
+    # workflow token, which by design does not re-trigger this workflow's
+    # `release: published` — the publish job below runs in this same run.
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag and release the declared version
+        run: |
+          node scripts/check-version.mjs
+          VERSION=$(node -p "require('./package.json').version")
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION already released"
+          else
+            gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
+          fi
+
   publish:
+    needs: [release]
+    # `needs` would skip this on the release event (release job skipped); run anyway then.
+    if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +65,18 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      - name: Skip a version that is already on npm
+        id: already
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          NAME=$(node -p "require('./package.json').name")
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$NAME@$VERSION is already published — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check publish token is configured
+        if: steps.already.outputs.skip != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -35,26 +86,23 @@ jobs:
             exit 1
           fi
 
-      - run: npm ci
-      - run: npm run check-version
-      - run: npm test
-      - run: npm run build
-
-      - name: Refuse to publish a version that is already on npm
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          NAME=$(node -p "require('./package.json').name")
-          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
-            echo "::error::$NAME@$VERSION is already published. Bump package.json and server.json."
-            exit 1
-          fi
+      - if: steps.already.outputs.skip != 'true'
+        run: npm ci
+      - if: steps.already.outputs.skip != 'true'
+        run: npm run check-version
+      - if: steps.already.outputs.skip != 'true'
+        run: npm test
+      - if: steps.already.outputs.skip != 'true'
+        run: npm run build
 
       - name: Publish
+        if: steps.already.outputs.skip != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
 
       - name: Verify npm now serves this version as latest
+        if: steps.already.outputs.skip != 'true'
         run: |
           VERSION=$(node -p "require('./package.json').version")
           NAME=$(node -p "require('./package.json').name")
