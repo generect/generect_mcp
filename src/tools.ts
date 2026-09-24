@@ -601,7 +601,7 @@ function detailParam(what: 'lead' | 'company') {
   return z
     .enum(['thin', 'full'])
     .describe(
-      `Row detail for the database search. "thin" (default) is FREE — ${thin}; no LinkedIn URL, domain, contacts or history — up to a daily per-account row quota (then a 429 that resets at 00:00 UTC; never billed). "full" returns the whole record, billed per row. Browse thin, then spend only on the rows you keep: generate_email takes the lead id directly, enrich_* gives the full record. Realtime (and company_filters searches) always return full rows.`,
+      `Row detail for the database search. Thin rows are FREE — ${thin}; no LinkedIn URL, domain, contacts or history — up to a daily per-account row quota that resets at 00:00 UTC. Omitted (default): thin while the free tier is available; once it is not (quota spent, a custom-contract account, a server without the tier) the search continues as before — full rows billed per row, marked thin_unavailable in the result, under the spend ceiling. "thin": free rows only — never billed, never escalated to realtime; a spent quota is a 429 and a realtime-only filter is an error. "full": the whole record, billed per row. Browse thin, then spend only on the rows you keep: generate_email takes the lead id directly, enrich_* gives the full record.`,
     )
     .optional();
 }
@@ -610,7 +610,7 @@ function detailParam(what: 'lead' | 'company') {
 function resolveDetail(
   args: any,
   opts: { twoLevel?: boolean },
-): { thin: boolean; defaulted?: boolean; conflict?: string } {
+): { thin: boolean; defaulted?: boolean; explicit?: boolean; conflict?: string } {
   const asked: Detail | undefined = args?.detail;
   const mode: Mode = args?.mode ?? 'auto';
   if (asked === 'thin' && mode === 'realtime') {
@@ -626,7 +626,7 @@ function resolveDetail(
     };
   }
   const thin = (asked ?? 'thin') === 'thin' && mode !== 'realtime' && !opts.twoLevel;
-  return { thin, defaulted: thin && asked === undefined };
+  return { thin, defaulted: thin && asked === undefined, explicit: thin && asked === 'thin' };
 }
 
 // ---------------------------------------------------------------------------
@@ -1375,7 +1375,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'search_leads',
-    `Return leads (people) matching an ICP. FREE by default: database mode with detail "thin" costs nothing (daily per-account row quota). detail "full" is ${priceTag('search_database').replace(/^BILLABLE — /, 'billable, ')} Realtime, or an auto escalation to it, is billed per row too. Run count_leads first — it is free and sizes the audience. Rows never include email or phone: call generate_email (it takes the lead id) or find_phone only on the ids you keep. Ordering is not stable, so paginate by passing ids you already have in exclude_ids rather than by offset.`,
+    `Return leads (people) matching an ICP. FREE by default while the account has free thin rows left today (daily quota; see detail — pass detail "thin" to guarantee $0). detail "full" is ${priceTag('search_database').replace(/^BILLABLE — /, 'billable, ')} Realtime, or an auto escalation to it, is billed per row too. Run count_leads first — it is free and sizes the audience. Rows never include email or phone: call generate_email (it takes the lead id) or find_phone only on the ids you keep. Ordering is not stable, so paginate by passing ids you already have in exclude_ids rather than by offset.`,
     {
       ...LEAD_FILTERS,
       ...LEGACY_LEAD_SHAPE,
@@ -1421,7 +1421,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           'search_leads',
           () =>
             callWithMode(fetcher, {
-              mode: args?.mode ?? 'auto',
+              // An explicit thin asks for $0: it never escalates to the billed live endpoint.
+              mode: detail.explicit ? 'database' : (args?.mode ?? 'auto'),
               dbUrl: `${apiBase}${V1}/search/database/${path}/`,
               rtUrl: `${apiBase}${V1}/search/realtime/${path}/`,
               body: detail.thin ? { ...(body as object), detail: 'thin' } : body,
@@ -1467,7 +1468,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'search_companies',
-    `Return companies matching an ICP. FREE by default: database mode with detail "thin" costs nothing (daily per-account row quota) but carries no domain — use enrich_company on the ones you keep. detail "full" is ${priceTag('search_database').replace(/^BILLABLE — /, 'billable, ')} Realtime is billed per row too. Run count_companies first. Note that headcount_range is a snapshot taken when the record was indexed and can lag the company's current size; the filter itself is applied at query time.`,
+    `Return companies matching an ICP. FREE by default while the account has free thin rows left today (daily quota; see detail — pass detail "thin" to guarantee $0); thin rows carry no domain — use enrich_company on the ones you keep. detail "full" is ${priceTag('search_database').replace(/^BILLABLE — /, 'billable, ')} Realtime is billed per row too. Run count_companies first. Note that headcount_range is a snapshot taken when the record was indexed and can lag the company's current size; the filter itself is applied at query time.`,
     {
       ...COMPANY_FILTERS,
       ...LEGACY_COMPANY_SHAPE,
@@ -1500,7 +1501,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           'search_companies',
           () =>
             callWithMode(fetcher, {
-              mode: args?.mode ?? 'auto',
+              // An explicit thin asks for $0: it never escalates to the billed live endpoint.
+              mode: detail.explicit ? 'database' : (args?.mode ?? 'auto'),
               dbUrl: `${apiBase}${V1}/search/database/companies/`,
               rtUrl: `${apiBase}${V1}/search/realtime/companies/`,
               body: detail.thin ? { ...body, detail: 'thin' } : body,

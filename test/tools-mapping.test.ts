@@ -1174,6 +1174,17 @@ test('search_leads: an EXPLICIT thin against an API without the tier is an error
   }
 });
 
+test('search_leads: an EXPLICIT thin with a realtime-only filter is an error, never a billed escalation', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads\//, ...UNSUPPORTED('changed_jobs') },
+    { match: /search\/realtime\/leads\//, body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.04 } } },
+  ]);
+  const r = await tools.search_leads({ job_titles: ['CEO'], changed_jobs: true, detail: 'thin' }, EXTRA);
+  assert.equal(r.isError, true);
+  assert.ok(!calls.some(c => /realtime/.test(c.url)));
+});
+
 test('search_leads: rows are labelled free only when the API confirms thin (meta.free_tier)', async () => {
   const { tools } = harness([
     TIER_ROUTE,
