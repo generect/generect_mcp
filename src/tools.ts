@@ -277,7 +277,7 @@ function apiError(err: any) {
     : quotaSpent
       ? 'Today\'s free thin-search quota is used up; nothing was charged. It resets at 00:00 UTC. Continuing now means detail "full", billed per row — ask the user before switching.'
       : thinUnavailable
-        ? 'Free thin search is not available for this account. Nothing was charged. Repeat with detail "full" only if the user accepts the per-row price (get_balance shows it).'
+        ? 'You asked for detail "thin" explicitly and it is not available for this account. Nothing was charged. Repeat with detail "full" (or without detail) only if the user accepts the per-row price (get_balance shows it).'
         : undefined;
   return {
     ...result({
@@ -449,30 +449,74 @@ async function callWithMode(
      * result to stop instead of escalating.
      */
     beforeEscalate?: () => unknown;
+    /**
+     * Full-row database body to fall back to when the server refuses a
+     * DEFAULTED thin request for this account (tier off, or a custom-contract
+     * account whose search is priced by its contract). That is exactly what
+     * 0.9.0 sent, so the caller keeps working; `beforeFull` re-checks the spend
+     * ceiling at the full price first. Omitted when the caller asked for thin
+     * explicitly — then the refusal is the answer.
+     */
+    fullBody?: unknown;
+    beforeFull?: () => unknown;
     headers: Record<string, string>;
     timeoutMs: number;
   },
-): Promise<{ data: any; mode: 'database' | 'realtime'; escalated_because?: string[]; stopped?: unknown }> {
+): Promise<{
+  data: any;
+  mode: 'database' | 'realtime';
+  escalated_because?: string[];
+  stopped?: unknown;
+  thin_unavailable?: string;
+}> {
   const { mode, dbUrl, rtUrl, body, headers, timeoutMs } = args;
   const init = (b: unknown) => ({ method: 'POST', headers, body: JSON.stringify(b) }) as RequestInit;
   const rtInit = init(args.rtBody ?? body);
   if (mode === 'realtime') {
     return { data: await callApi(fetcher, rtUrl, rtInit, timeoutMs), mode: 'realtime' };
   }
+  let thinUnavailable: string | undefined;
   try {
     return { data: await callApi(fetcher, dbUrl, init(body), timeoutMs), mode: 'database' };
-  } catch (err: any) {
+  } catch (first: any) {
+    let err = first;
+    const refusal = args.fullBody !== undefined ? thinRefusal(err) : null;
+    if (refusal) {
+      const stopped = args.beforeFull?.();
+      if (stopped) return { data: null, mode: 'database', stopped, thin_unavailable: refusal };
+      thinUnavailable = refusal;
+      try {
+        return {
+          data: await callApi(fetcher, dbUrl, init(args.fullBody), timeoutMs),
+          mode: 'database',
+          thin_unavailable: refusal,
+        };
+      } catch (second: any) {
+        err = second; // e.g. a realtime-only filter: same escalation rules as below
+      }
+    }
     const blocked = unsupportedFilters(err?.detail);
     // An explicit database request is never silently upgraded to a pricier call.
     if (mode === 'database' || blocked.length === 0) throw err;
     const stopped = args.beforeEscalate?.();
-    if (stopped) return { data: null, mode: 'database', escalated_because: blocked, stopped };
+    if (stopped)
+      return { data: null, mode: 'database', escalated_because: blocked, stopped, thin_unavailable: thinUnavailable };
     return {
       data: await callApi(fetcher, rtUrl, rtInit, timeoutMs),
       mode: 'realtime',
       escalated_because: blocked,
+      thin_unavailable: thinUnavailable,
     };
   }
+}
+
+/** Why the server refused a thin request, or null when it didn't. */
+function thinRefusal(err: any): string | null {
+  if (err?.status !== 400) return null;
+  const text = typeof err?.detail === 'string' ? err.detail : JSON.stringify(err?.detail ?? '');
+  if (/not available on custom-contract/i.test(text)) return 'custom_contract';
+  if (/search is not enabled/i.test(text)) return 'not_enabled';
+  return null;
 }
 
 function searchOp(mode: 'database' | 'realtime', thin: boolean): Operation {
@@ -481,7 +525,22 @@ function searchOp(mode: 'database' | 'realtime', thin: boolean): Operation {
 }
 
 /** Quota facts for a thin search, straight from the API's meta. */
-function thinFacts(mode: 'database' | 'realtime', thin: boolean, data: any): Record<string, unknown> {
+function thinFacts(
+  mode: 'database' | 'realtime',
+  thin: boolean,
+  data: any,
+  thinUnavailable?: string,
+): Record<string, unknown> {
+  if (thinUnavailable) {
+    return {
+      detail: 'full',
+      thin_unavailable: thinUnavailable,
+      thin_note:
+        thinUnavailable === 'custom_contract'
+          ? 'Free thin search does not apply to this account: search is priced by its contract, so these are full rows billed as before.'
+          : 'Free thin search is not enabled on the server yet, so these are full rows billed per row, as before.',
+    };
+  }
   if (mode !== 'database' || !thin) return {};
   return {
     detail: 'thin',
@@ -519,7 +578,10 @@ function detailParam(what: 'lead' | 'company') {
 }
 
 /** What a search will actually send: thin only where the API accepts it. */
-function resolveDetail(args: any, opts: { twoLevel?: boolean }): { thin: boolean; conflict?: string } {
+function resolveDetail(
+  args: any,
+  opts: { twoLevel?: boolean },
+): { thin: boolean; defaulted?: boolean; conflict?: string } {
   const asked: Detail | undefined = args?.detail;
   const mode: Mode = args?.mode ?? 'auto';
   if (asked === 'thin' && mode === 'realtime') {
@@ -534,7 +596,8 @@ function resolveDetail(args: any, opts: { twoLevel?: boolean }): { thin: boolean
       conflict: 'detail "thin" is not available with company_filters (two-level search); drop one of them.',
     };
   }
-  return { thin: (asked ?? 'thin') === 'thin' && mode !== 'realtime' && !opts.twoLevel };
+  const thin = (asked ?? 'thin') === 'thin' && mode !== 'realtime' && !opts.twoLevel;
+  return { thin, defaulted: thin && asked === undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -1324,17 +1387,23 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           ? { company_search_criteria: companyFilters, lead_search_criteria: leadFilters }
           : leadFilters;
 
-        const { data, mode, escalated_because, stopped } = await withProgress(extra, 'search_leads', () =>
-          callWithMode(fetcher, {
-            mode: args?.mode ?? 'auto',
-            dbUrl: `${apiBase}${V1}/search/database/${path}/`,
-            rtUrl: `${apiBase}${V1}/search/realtime/${path}/`,
-            body: detail.thin ? { ...(body as object), detail: 'thin' } : body,
-            rtBody: body,
-            beforeEscalate: () => spendCeiling(book, 'search_realtime', rows, args),
-            headers,
-            timeoutMs: timeoutOf(args),
-          }),
+        const { data, mode, escalated_because, stopped, thin_unavailable } = await withProgress(
+          extra,
+          'search_leads',
+          () =>
+            callWithMode(fetcher, {
+              mode: args?.mode ?? 'auto',
+              dbUrl: `${apiBase}${V1}/search/database/${path}/`,
+              rtUrl: `${apiBase}${V1}/search/realtime/${path}/`,
+              body: detail.thin ? { ...(body as object), detail: 'thin' } : body,
+              rtBody: body,
+              beforeEscalate: () => spendCeiling(book, 'search_realtime', rows, args),
+              ...(detail.defaulted
+                ? { fullBody: body, beforeFull: () => spendCeiling(book, 'search_database', rows, args) }
+                : {}),
+              headers,
+              timeoutMs: timeoutOf(args),
+            }),
         );
         if (stopped) return stopped;
 
@@ -1354,8 +1423,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
               }
             : {}),
           vocabulary_warnings: gate.warnings.length > 0 ? gate.warnings : undefined,
-          cost: receipt(searchOp(mode, detail.thin), data),
-          ...thinFacts(mode, detail.thin, data),
+          cost: receipt(searchOp(mode, detail.thin && !thin_unavailable), data),
+          ...thinFacts(mode, detail.thin, data, thin_unavailable),
           leads: Array.isArray(leads) ? (compact ? leads.map(compactLead) : leads) : leads,
           next_page_args: nextPageArgs(args, Array.isArray(leads) ? leads : []),
         });
@@ -1397,17 +1466,23 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const overCeiling = spendCeiling(book, likelyOp, rows, args);
         if (overCeiling) return overCeiling;
 
-        const { data, mode, escalated_because, stopped } = await withProgress(extra, 'search_companies', () =>
-          callWithMode(fetcher, {
-            mode: args?.mode ?? 'auto',
-            dbUrl: `${apiBase}${V1}/search/database/companies/`,
-            rtUrl: `${apiBase}${V1}/search/realtime/companies/`,
-            body: detail.thin ? { ...body, detail: 'thin' } : body,
-            rtBody: body,
-            beforeEscalate: () => spendCeiling(book, 'search_realtime', rows, args),
-            headers,
-            timeoutMs: timeoutOf(args),
-          }),
+        const { data, mode, escalated_because, stopped, thin_unavailable } = await withProgress(
+          extra,
+          'search_companies',
+          () =>
+            callWithMode(fetcher, {
+              mode: args?.mode ?? 'auto',
+              dbUrl: `${apiBase}${V1}/search/database/companies/`,
+              rtUrl: `${apiBase}${V1}/search/realtime/companies/`,
+              body: detail.thin ? { ...body, detail: 'thin' } : body,
+              rtBody: body,
+              beforeEscalate: () => spendCeiling(book, 'search_realtime', rows, args),
+              ...(detail.defaulted
+                ? { fullBody: body, beforeFull: () => spendCeiling(book, 'search_database', rows, args) }
+                : {}),
+              headers,
+              timeoutMs: timeoutOf(args),
+            }),
         );
         if (stopped) return stopped;
         const companies: any[] = data?.data?.companies ?? data?.data ?? [];
@@ -1425,8 +1500,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
               }
             : {}),
           vocabulary_warnings: gate.warnings.length > 0 ? gate.warnings : undefined,
-          cost: receipt(searchOp(mode, detail.thin), data),
-          ...thinFacts(mode, detail.thin, data),
+          cost: receipt(searchOp(mode, detail.thin && !thin_unavailable), data),
+          ...thinFacts(mode, detail.thin, data, thin_unavailable),
           companies: Array.isArray(companies) ? (compact ? companies.map(compactCompany) : companies) : companies,
           next_page_args: nextPageArgs(args, Array.isArray(companies) ? companies : []),
         });

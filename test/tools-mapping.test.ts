@@ -8,7 +8,9 @@ import { TOOL_META, TOOL_ORDER } from '../src/tool-meta.ts';
 // Register the tools against a fake McpServer that captures handlers, and a fake
 // fetcher driven by URL matchers. This exercises the real args -> Generect-API
 // mapping (URL, body shape, mode routing, cost reporting) end to end.
-type Route = { match: RegExp; status?: number; body: any };
+// `respond` (optional) answers per request body — for a server that treats the
+// same URL differently depending on what was sent.
+type Route = { match: RegExp; status?: number; body?: any; respond?: (body: any) => { status?: number; body: any } };
 
 const TIER = {
   current_tier: {
@@ -36,9 +38,10 @@ function harness(routes: Route[]) {
     }
     calls.push({ url, method: init.method ?? 'GET', body, headers: init.headers ?? {} });
     const route = routes.find(r => r.match.test(url));
-    const payload = route ? route.body : { data: {}, meta: { amount_charged: 0 } };
+    const answer = route?.respond ? route.respond(body) : null;
+    const payload = answer ? answer.body : route ? route.body : { data: {}, meta: { amount_charged: 0 } };
     return new Response(JSON.stringify(payload), {
-      status: route?.status ?? 200,
+      status: answer?.status ?? route?.status ?? 200,
       headers: { 'content-type': 'application/json' },
     });
   };
@@ -1113,19 +1116,68 @@ test('search_leads: a spent daily quota tells the agent to ask before paying', a
   assert.match(out(r).next_step, /ask the user/);
 });
 
-test('search_leads: thin not enabled on the server is explained, not retried at full price', async () => {
+const THIN_REFUSED = (message: string) => ({
+  status: 400,
+  body: { status: 'error', status_code: 400, detail: { detail: [message] } },
+});
+
+for (const [reason, message] of [
+  ['not_enabled', '"thin" search is not enabled. Omit "detail" (or send "full") for billed full rows.'],
+  ['custom_contract', '"thin" search is not available on custom-contract accounts; search is priced by your contract.'],
+] as const) {
+  test(`search_leads: a defaulted thin refused as ${reason} falls back to the 0.9.0 full request`, async () => {
+    const { tools, calls } = harness([
+      TIER_ROUTE,
+      {
+        match: /search\/database\/leads\//,
+        respond: body =>
+          body?.detail === 'thin'
+            ? THIN_REFUSED(message)
+            : { body: { data: { leads: [LEAD_ROW], results_count: 1 }, meta: { amount_charged: 0.01 } } },
+      },
+    ]);
+    const r = await tools.search_leads({ job_titles: ['CEO'] }, EXTRA);
+    assert.notEqual(r.isError, true);
+    const sent = calls.filter(c => /search\/database/.test(c.url));
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0].body.detail, 'thin');
+    assert.ok(!('detail' in sent[1].body), 'the retry is exactly the 0.9.0 body');
+    assert.equal(out(r).thin_unavailable, reason);
+    assert.equal(out(r).cost.operation, 'search_database');
+    assert.equal(out(r).cost.amount_charged_usd, 0.01);
+    assert.match(out(r).thin_note, /billed/);
+  });
+}
+
+test('search_leads: an EXPLICIT thin that is refused is an error, never a full-price retry', async () => {
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads\//, ...THIN_REFUSED('"thin" search is not enabled. Omit "detail".') },
+  ]);
+  const r = await tools.search_leads({ job_titles: ['CEO'], detail: 'thin' }, EXTRA);
+  assert.equal(r.isError, true);
+  assert.match(out(r).next_step, /asked for detail "thin" explicitly/);
+  assert.equal(calls.filter(c => /search/.test(c.url)).length, 1);
+});
+
+test('search_leads: thin refused, then a realtime-only filter — auto still escalates as before', async () => {
   const { tools, calls } = harness([
     TIER_ROUTE,
     {
       match: /search\/database\/leads\//,
-      status: 400,
-      body: { status: 'error', status_code: 400, detail: { detail: ['"thin" search is not enabled. Omit "detail".'] } },
+      respond: body =>
+        body?.detail === 'thin'
+          ? THIN_REFUSED('"thin" search is not available on custom-contract accounts.')
+          : UNSUPPORTED('changed_jobs'),
     },
+    { match: /search\/realtime\/leads\//, body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.04 } } },
   ]);
-  const r = await tools.search_leads({ job_titles: ['CEO'] }, EXTRA);
-  assert.equal(r.isError, true);
-  assert.match(out(r).next_step, /detail "full" only if the user accepts/);
-  assert.equal(calls.filter(c => /search/.test(c.url)).length, 1, 'no silent full-price retry');
+  const r = out(await tools.search_leads({ job_titles: ['CEO'], changed_jobs: true }, EXTRA));
+  assert.equal(r.mode, 'realtime');
+  assert.deepEqual(r.escalated_to_realtime_because, ['changed_jobs']);
+  assert.equal(r.thin_unavailable, 'custom_contract');
+  assert.equal(calls.filter(c => /search/.test(c.url)).length, 3, 'thin, full, live');
+  assert.ok(!('detail' in calls.find(c => /realtime/.test(c.url))!.body));
 });
 
 test('search_companies: thin by default; compact location is built from the HQ fields', async () => {
