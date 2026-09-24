@@ -1097,23 +1097,70 @@ test('search_leads: two-level searches never send detail (company-leads has no t
   assert.equal(refused.status, 'not_sent');
 });
 
-test('search_leads: a spent daily quota tells the agent to ask before paying', async () => {
-  const { tools } = harness([
+const QUOTA_SPENT = {
+  status: 429,
+  body: {
+    status: 'error',
+    status_code: 429,
+    detail: 'Daily free search quota reached (2000 thin rows). It resets at 00:00 UTC.',
+  },
+};
+
+test('search_leads: a spent quota on a DEFAULT search continues billed, as 0.9.0 did, and says so', async () => {
+  const { tools, calls } = harness([
     TIER_ROUTE,
     {
       match: /search\/database\/leads\//,
-      status: 429,
-      body: {
-        status: 'error',
-        status_code: 429,
-        detail: 'Daily free search quota reached (2000 thin rows). It resets at 00:00 UTC.',
-      },
+      respond: body =>
+        body?.detail === 'thin'
+          ? QUOTA_SPENT
+          : { body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.01 } } },
     },
   ]);
-  const r = await tools.search_leads({ job_titles: ['CEO'] }, EXTRA);
+  const r = out(await tools.search_leads({ job_titles: ['CEO'] }, EXTRA));
+  assert.equal(r.thin_unavailable, 'quota_exhausted');
+  assert.equal(r.cost.operation, 'search_database');
+  assert.match(r.thin_note, /resets at 00:00 UTC/);
+  assert.equal(calls.filter(c => /search/.test(c.url)).length, 2);
+});
+
+test('search_leads: a spent quota on an EXPLICIT thin search asks before paying', async () => {
+  const { tools, calls } = harness([TIER_ROUTE, { match: /search\/database\/leads\//, ...QUOTA_SPENT }]);
+  const r = await tools.search_leads({ job_titles: ['CEO'], detail: 'thin' }, EXTRA);
   assert.equal(r.isError, true);
   assert.match(out(r).next_step, /resets at 00:00 UTC/);
   assert.match(out(r).next_step, /ask the user/);
+  assert.equal(calls.filter(c => /search/.test(c.url)).length, 1);
+});
+
+test('search_leads: an API without the thin tier (detail = unknown filter) is NOT escalated to realtime', async () => {
+  // Prod answer on 2026-09-24, before the backend shipped thin.
+  const { tools, calls } = harness([
+    TIER_ROUTE,
+    {
+      match: /search\/database\/leads\//,
+      respond: body =>
+        body?.detail === 'thin'
+          ? UNSUPPORTED('detail')
+          : { body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.01 } } },
+    },
+    { match: /search\/realtime\/leads\//, body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.04 } } },
+  ]);
+  const r = out(await tools.search_leads({ job_titles: ['CEO'] }, EXTRA));
+  assert.ok(!calls.some(c => /realtime/.test(c.url)), 'must not pay realtime because the API does not know `detail`');
+  assert.equal(r.mode, 'database');
+  assert.equal(r.thin_unavailable, 'not_supported');
+  assert.equal(r.cost.operation, 'search_database');
+});
+
+test('search_leads: rows are labelled free only when the API confirms thin (meta.free_tier)', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /search\/database\/leads\//, body: { data: { leads: [LEAD_ROW] }, meta: { amount_charged: 0.01 } } },
+  ]);
+  const r = out(await tools.search_leads({ job_titles: ['CEO'] }, EXTRA));
+  assert.equal(r.cost.operation, 'search_database', 'billed rows must not be reported as search_thin');
+  assert.equal(r.free_tier, undefined);
 });
 
 const THIN_REFUSED = (message: string) => ({

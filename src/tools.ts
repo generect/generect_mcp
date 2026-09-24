@@ -270,12 +270,14 @@ function apiError(err: any) {
   const detail = err?.detail ?? null;
   const insufficient = typeof detail === 'string' && /insufficient funds/i.test(detail);
   const text = typeof detail === 'string' ? detail : JSON.stringify(detail ?? '');
+  // Only the API's own thin-tier messages ("\"thin\" search is not ...") — any
+  // other "... is not enabled" error from any other tool is not about thin.
   const quotaSpent = status === 429 && /free search quota/i.test(text);
-  const thinUnavailable = /search is not enabled|not available on custom-contract/i.test(text);
+  const thinUnavailable = /thin\\?"? search is not (enabled|available)/i.test(text);
   const nextStep = insufficient
     ? 'The account is out of credits. Nothing was charged. Call get_balance, tell the user the balance, and stop — do not retry.'
     : quotaSpent
-      ? 'Today\'s free thin-search quota is used up; nothing was charged. It resets at 00:00 UTC. Continuing now means detail "full", billed per row — ask the user before switching.'
+      ? 'You asked for detail "thin" explicitly and today\'s free thin-row quota is used up; nothing was charged. It resets at 00:00 UTC. Continuing now means detail "full", billed per row — ask the user before switching.'
       : thinUnavailable
         ? 'You asked for detail "thin" explicitly and it is not available for this account. Nothing was charged. Repeat with detail "full" (or without detail) only if the user accepts the per-row price (get_balance shows it).'
         : undefined;
@@ -512,10 +514,18 @@ async function callWithMode(
 
 /** Why the server refused a thin request, or null when it didn't. */
 function thinRefusal(err: any): string | null {
-  if (err?.status !== 400) return null;
   const text = typeof err?.detail === 'string' ? err.detail : JSON.stringify(err?.detail ?? '');
+  // Today's quota of free rows is spent: the call a default search made on
+  // 0.9.0 (full, billed) is still what the caller gets, under the spend ceiling.
+  if (err?.status === 429 && /free search quota/i.test(text)) return 'quota_exhausted';
+  if (err?.status !== 400) return null;
   if (/not available on custom-contract/i.test(text)) return 'custom_contract';
   if (/search is not enabled/i.test(text)) return 'not_enabled';
+  // An API that predates the thin tier names `detail` as an unknown database
+  // filter ("... not supported in database mode ... Use realtime endpoint").
+  // That must NOT read as a realtime-only filter — auto mode would escalate every
+  // default search to the pricier live endpoint. Measured on prod 2026-09-24.
+  if (unsupportedFilters(err?.detail).includes('detail')) return 'not_supported';
   return null;
 }
 
@@ -525,6 +535,24 @@ function searchOp(mode: 'database' | 'realtime', thin: boolean): Operation {
 }
 
 /** Quota facts for a thin search, straight from the API's meta. */
+/**
+ * Thin only when the API says so: a response is labelled free on the strength
+ * of its own `meta.free_tier`, never because we asked for thin — an API that
+ * ignored the key would otherwise have billed rows reported as free.
+ */
+function servedThin(mode: 'database' | 'realtime', asked: boolean, data: any, thinUnavailable?: string): boolean {
+  return mode === 'database' && asked && !thinUnavailable && data?.meta?.free_tier != null;
+}
+
+const THIN_UNAVAILABLE_NOTES: Record<string, string> = {
+  custom_contract:
+    'Free thin search does not apply to this account: search is priced by its contract, so these are full rows billed as before.',
+  not_enabled: 'Free thin search is not enabled on the server yet, so these are full rows billed per row, as before.',
+  not_supported: 'This API version has no free thin search yet, so these are full rows billed per row, as before.',
+  quota_exhausted:
+    "Today's free thin-row quota is used up (it resets at 00:00 UTC), so these are full rows billed per row. Tell the user if they care about cost.",
+};
+
 function thinFacts(
   mode: 'database' | 'realtime',
   thin: boolean,
@@ -535,10 +563,7 @@ function thinFacts(
     return {
       detail: 'full',
       thin_unavailable: thinUnavailable,
-      thin_note:
-        thinUnavailable === 'custom_contract'
-          ? 'Free thin search does not apply to this account: search is priced by its contract, so these are full rows billed as before.'
-          : 'Free thin search is not enabled on the server yet, so these are full rows billed per row, as before.',
+      thin_note: THIN_UNAVAILABLE_NOTES[thinUnavailable] ?? THIN_UNAVAILABLE_NOTES.not_enabled,
     };
   }
   if (mode !== 'database' || !thin) return {};
@@ -1423,8 +1448,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
               }
             : {}),
           vocabulary_warnings: gate.warnings.length > 0 ? gate.warnings : undefined,
-          cost: receipt(searchOp(mode, detail.thin && !thin_unavailable), data),
-          ...thinFacts(mode, detail.thin, data, thin_unavailable),
+          cost: receipt(searchOp(mode, servedThin(mode, detail.thin, data, thin_unavailable)), data),
+          ...thinFacts(mode, servedThin(mode, detail.thin, data, thin_unavailable), data, thin_unavailable),
           leads: Array.isArray(leads) ? (compact ? leads.map(compactLead) : leads) : leads,
           next_page_args: nextPageArgs(args, Array.isArray(leads) ? leads : []),
         });
@@ -1500,8 +1525,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
               }
             : {}),
           vocabulary_warnings: gate.warnings.length > 0 ? gate.warnings : undefined,
-          cost: receipt(searchOp(mode, detail.thin && !thin_unavailable), data),
-          ...thinFacts(mode, detail.thin, data, thin_unavailable),
+          cost: receipt(searchOp(mode, servedThin(mode, detail.thin, data, thin_unavailable)), data),
+          ...thinFacts(mode, servedThin(mode, detail.thin, data, thin_unavailable), data, thin_unavailable),
           companies: Array.isArray(companies) ? (compact ? companies.map(compactCompany) : companies) : companies,
           next_page_args: nextPageArgs(args, Array.isArray(companies) ? companies : []),
         });
