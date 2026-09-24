@@ -1,0 +1,78 @@
+name: Release surfaces
+
+# A release is done when every surface a user can reach serves the version main
+# declares (RELEASING.md). This runs scripts/check-surfaces.mjs after every
+# deploy/publish run and once a day, and keeps ONE issue open while anything
+# lags — the issue is what people and agents watch; it closes itself once every
+# required surface catches up.
+
+on:
+  workflow_run:
+    workflows: ['Deploy MCP to production', 'Publish to npm', 'Publish to MCP Registry']
+    types: [completed]
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: release-surfaces
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      TITLE: 'Release surfaces out of sync'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Publishing and deploying are asynchronous at the far end (npm CDN,
+      # registry cache, pm2 reload); give a just-finished run a minute to land.
+      - name: Settle
+        if: github.event_name == 'workflow_run'
+        run: sleep 60
+
+      - name: Check every surface
+        id: check
+        run: |
+          set +e
+          node scripts/check-surfaces.mjs --summary | tee report.txt
+          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the tracking issue
+        if: steps.check.outputs.code != '0'
+        run: |
+          {
+            echo "The version on \`main\` is not what every surface serves. Checked by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+            echo
+            echo '```'
+            cat report.txt
+            echo '```'
+            echo
+            echo "This issue closes itself when every required surface catches up."
+          } > body.md
+          n=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then
+            gh issue edit "$n" --body-file body.md
+          else
+            gh issue create --title "$TITLE" --body-file body.md
+          fi
+          exit 1
+
+      - name: Close the tracking issue
+        if: steps.check.outputs.code == '0'
+        run: |
+          n=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number // empty')
+          [ -z "$n" ] || gh issue close "$n" --comment "Every required surface serves $(node -p "require('./package.json').version") — closed by [this run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
