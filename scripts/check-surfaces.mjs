@@ -29,12 +29,15 @@ const args = new Set(process.argv.slice(2));
 // daily job that cries wolf gets muted.
 async function getJson(url, headers = {}, attempt = 1) {
   try {
-    const res = await fetch(url, { headers: { accept: 'application/json', ...headers }, signal: AbortSignal.timeout(15000) });
+    const res = await fetch(url, {
+      headers: { accept: 'application/json', ...headers },
+      signal: AbortSignal.timeout(15000),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (e) {
     if (attempt >= 2 || String(e.message).includes('HTTP 404')) throw e;
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 2000));
     return getJson(url, headers, attempt + 1);
   }
 }
@@ -92,10 +95,13 @@ const checks = [
         headers: { 'user-agent': 'Mozilla/5.0 generect-release-check' },
         signal: AbortSignal.timeout(15000),
       });
-      // React renders the badge as `v<!-- -->0.1.0`; drop the comments first,
-      // then the first vX.Y.Z on the page is the release Glama shows as latest.
-      const html = (await res.text()).replace(/<!--.*?-->/g, '');
-      const m = html.match(/\bv(\d+\.\d+\.\d+)\b/);
+      // React renders the badge as `v<!-- -->0.1.0` (that exact empty-comment
+      // marker between text nodes). Match it literally rather than stripping
+      // comments: nothing here is sanitised or rendered, we only read a number,
+      // and a generic comment-stripping regex is what CodeQL rightly distrusts.
+      // The first vX.Y.Z on the page is the release Glama shows as latest.
+      const html = await res.text();
+      const m = html.match(/\bv(?:<!-- -->)?(\d+\.\d+\.\d+)\b/);
       return m ? m[1] : undefined; // undefined = could not read, not "wrong"
     },
   },
@@ -111,10 +117,19 @@ for (const c of checks) {
     error = e.message;
   }
   const status = error ? 'error' : got === undefined ? 'unknown' : got === want ? 'ok' : 'drift';
-  results.push({ surface: c.surface, required: c.required, want, got: got ?? null, status, error, where: c.where, fix: c.fix });
+  results.push({
+    surface: c.surface,
+    required: c.required,
+    want,
+    got: got ?? null,
+    status,
+    error,
+    where: c.where,
+    fix: c.fix,
+  });
 }
 
-const failing = results.filter((r) => r.required && r.status !== 'ok');
+const failing = results.filter(r => r.required && r.status !== 'ok');
 
 if (args.has('--json')) {
   console.log(JSON.stringify({ version: want, ok: failing.length === 0, results }, null, 2));
@@ -128,7 +143,10 @@ if (args.has('--json')) {
 
 if (args.has('--summary') && process.env.GITHUB_STEP_SUMMARY) {
   const rows = results
-    .map((r) => `| ${r.surface} | ${r.required ? 'yes' : 'no'} | ${r.got ?? '-'} | ${r.status} | ${r.status === 'ok' ? '' : r.fix} |`)
+    .map(
+      r =>
+        `| ${r.surface} | ${r.required ? 'yes' : 'no'} | ${r.got ?? '-'} | ${r.status} | ${r.status === 'ok' ? '' : r.fix} |`,
+    )
     .join('\n');
   appendFileSync(
     process.env.GITHUB_STEP_SUMMARY,
