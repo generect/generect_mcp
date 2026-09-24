@@ -273,7 +273,8 @@ function apiError(err: any) {
   // Only the API's own thin-tier messages ("\"thin\" search is not ...") — any
   // other "... is not enabled" error from any other tool is not about thin.
   const quotaSpent = status === 429 && /free search quota/i.test(text);
-  const thinUnavailable = /thin\\?"? search is not (enabled|available)/i.test(text);
+  const thinUnavailable =
+    /thin\\?"? search is not (enabled|available)/i.test(text) || /`detail` filter is not supported/i.test(text);
   const nextStep = insufficient
     ? 'The account is out of credits. Nothing was charged. Call get_balance, tell the user the balance, and stop — do not retry.'
     : quotaSpent
@@ -499,7 +500,10 @@ async function callWithMode(
     }
     const blocked = unsupportedFilters(err?.detail);
     // An explicit database request is never silently upgraded to a pricier call.
-    if (mode === 'database' || blocked.length === 0) throw err;
+    // Nor is any request because of `detail`: that key is ours, database-only, and
+    // an API that does not know it is refusing the thin tier, not asking for the
+    // live endpoint (a defaulted thin was already retried as full above).
+    if (mode === 'database' || blocked.length === 0 || blocked.includes('detail')) throw err;
     const stopped = args.beforeEscalate?.();
     if (stopped)
       return { data: null, mode: 'database', escalated_because: blocked, stopped, thin_unavailable: thinUnavailable };

@@ -1153,6 +1153,27 @@ test('search_leads: an API without the thin tier (detail = unknown filter) is NO
   assert.equal(r.cost.operation, 'search_database');
 });
 
+test('search_leads: an EXPLICIT thin against an API without the tier is an error, never realtime', async () => {
+  for (const tool of ['search_leads', 'search_companies'] as const) {
+    const { tools, calls } = harness([
+      TIER_ROUTE,
+      { match: /search\/database\//, ...UNSUPPORTED('detail') },
+      {
+        match: /search\/realtime\//,
+        body: { data: { leads: [LEAD_ROW], companies: [] }, meta: { amount_charged: 0.04 } },
+      },
+    ]);
+    const args =
+      tool === 'search_leads'
+        ? { job_titles: ['CEO'], detail: 'thin' }
+        : { industries: ['Software Development'], detail: 'thin' };
+    const r = await tools[tool](args, EXTRA);
+    assert.equal(r.isError, true, tool);
+    assert.ok(!calls.some(c => /realtime/.test(c.url)), `${tool} escalated to realtime over \`detail\``);
+    assert.match(out(r).next_step, /asked for detail "thin" explicitly/, tool);
+  }
+});
+
 test('search_leads: rows are labelled free only when the API confirms thin (meta.free_tier)', async () => {
   const { tools } = harness([
     TIER_ROUTE,
