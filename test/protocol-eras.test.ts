@@ -120,6 +120,8 @@ for (const [era, mode] of [
       assert.deepEqual(names, ['build_prospect_list', 'enrich_my_list', 'size_an_audience', 'spend_report']);
       const got: any = await client.getPrompt({ name: 'size_an_audience', arguments: { icp: 'CTOs in Berlin' } });
       assert.match(got.messages[0].content.text, /CTOs in Berlin/);
+      const noArgs: any = await client.getPrompt({ name: 'spend_report' });
+      assert.ok(noArgs.messages.length >= 1, 'a prompt without arguments renders without them');
     } finally {
       await client.close();
       await handler.close();

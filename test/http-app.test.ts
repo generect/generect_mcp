@@ -92,3 +92,27 @@ test('express /mcp: a browser preflight may send the 2026-07-28 headers', async 
   assert.equal(res.status, 204);
   assert.match(res.headers.get('access-control-allow-headers') ?? '', /mcp-param-region/);
 });
+
+for (const version of ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']) {
+  test(`express /mcp: an initialize at ${version}, with no protocol header, still opens a 2025 session`, async () => {
+    const res = await fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: 'Bearer old-client-key',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: version, capabilities: {}, clientInfo: { name: 'old', version: '0' } },
+      }),
+    });
+    assert.equal(res.status, 200, await res.clone().text());
+    assert.ok(res.headers.get('mcp-session-id'), 'a 2025-era initialize must get a session');
+    const text = await res.text();
+    const payload = JSON.parse(text.includes('data:') ? text.split('data:').pop()!.trim() : text);
+    assert.equal(payload.result.protocolVersion, version);
+  });
+}
