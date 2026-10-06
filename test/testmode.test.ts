@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerTools } from '../src/tools.ts';
+import { ctxWith } from './helpers-ctx.ts';
 import { resetPriceBookCache } from '../src/pricing.ts';
 import { annotate, isTestCredential, isTestRequest, TEST_MODE_NOTICE } from '../src/testmode.ts';
 
@@ -23,13 +24,13 @@ function harness() {
     });
   };
   const tools: Record<string, Function> = {};
-  const server: any = { tool: (name: string, _d: string, _s: any, handler: Function) => (tools[name] = handler) };
+  const server: any = { registerTool: (name: string, _c: any, handler: Function) => (tools[name] = handler) };
   registerTools(server, fetcher as any, 'https://api.test', '');
   return tools;
 }
 
-const TEST_EXTRA = { requestInfo: { headers: { authorization: 'Token test_0f1e2d3c4b5a6978' } } };
-const LIVE_EXTRA = { requestInfo: { headers: { authorization: 'Token a1b2c3d4e5f60718' } } };
+const TEST_EXTRA = ctxWith('Token test_0f1e2d3c4b5a6978');
+const LIVE_EXTRA = ctxWith('Token a1b2c3d4e5f60718');
 
 test('isTestCredential: recognises the prefix through every accepted header form', () => {
   assert.equal(isTestCredential('test_abc'), true);
@@ -48,7 +49,7 @@ test('isTestRequest: reads the credential and never throws on a malformed one', 
   assert.equal(await isTestRequest(LIVE_EXTRA), false);
   assert.equal(await isTestRequest({}), false);
   assert.equal(await isTestRequest(undefined), false);
-  assert.equal(await isTestRequest({ requestInfo: { headers: { authorization: 'Bearer not.a.jwt' } } }), false);
+  assert.equal(await isTestRequest(ctxWith('Bearer not.a.jwt')), false);
 });
 
 test('annotate: the notice reaches BOTH channels a model might read', () => {

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { registerTools } from '../src/tools.ts';
+import { ctxWith } from './helpers-ctx.ts';
 import { resetPriceBookCache } from '../src/pricing.ts';
 import { TOOL_META, TOOL_ORDER } from '../src/tool-meta.ts';
 
@@ -46,12 +47,12 @@ function harness(routes: Route[]) {
     });
   };
   const tools: Record<string, Function> = {};
-  const server: any = { tool: (name: string, _d: string, _s: any, handler: Function) => (tools[name] = handler) };
+  const server: any = { registerTool: (name: string, _c: any, handler: Function) => (tools[name] = handler) };
   registerTools(server, fetcher as any, 'https://api.test', '');
   return { tools, calls };
 }
 
-const EXTRA = { requestInfo: { headers: { authorization: 'Token test-key' } } };
+const EXTRA = ctxWith('Token test-key');
 const TIER_ROUTE: Route = { match: /tiers\/my-tier/, body: TIER };
 const out = (r: any) => r.structuredContent;
 
@@ -355,7 +356,7 @@ test('generate_email: one failed candidate does not lose the successful ones', a
   };
   resetPriceBookCache();
   const tools: Record<string, Function> = {};
-  const server: any = { tool: (name: string, _d: string, _s: any, h: Function) => (tools[name] = h) };
+  const server: any = { registerTool: (name: string, _c: any, h: Function) => (tools[name] = h) };
   registerTools(server, fetcher as any, 'https://api.test', '');
   const r = out(await tools.generate_email({ candidates: [{ lead_id: 'a' }, { lead_id: 'b' }] }, EXTRA));
   assert.equal(r.results.length, 2);
@@ -973,13 +974,12 @@ test('a realtime search sends progress heartbeats when the client asked for them
     { match: /search\/realtime\/leads/, body: { data: { leads: [] }, meta: { amount_charged: 0 } } },
   ]);
   const sent: any[] = [];
-  const extra = {
-    ...EXTRA,
+  const extra = ctxWith('Token test-key', {
     _meta: { progressToken: 'tok-1' },
-    sendNotification: async (n: any) => {
+    notify: async (n: any) => {
       sent.push(n);
     },
-  };
+  });
   await tools.search_leads({ job_titles: ['CEO'], mode: 'realtime' }, extra);
   assert.ok(sent.length >= 1, 'expected at least a "started" progress notification');
   assert.equal(sent[0].method, 'notifications/progress');
@@ -992,7 +992,7 @@ test('no progress notifications without a progress token', async () => {
     { match: /search\/realtime\/leads/, body: { data: { leads: [] }, meta: { amount_charged: 0 } } },
   ]);
   const sent: any[] = [];
-  const extra = { ...EXTRA, sendNotification: async (n: any) => void sent.push(n) };
+  const extra = ctxWith('Token test-key', { notify: async (n: any) => void sent.push(n) });
   await tools.search_leads({ job_titles: ['CEO'], mode: 'realtime' }, extra);
   assert.equal(sent.length, 0);
 });

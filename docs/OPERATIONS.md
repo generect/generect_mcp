@@ -2,6 +2,31 @@
 
 For people who run, deploy or debug the server. Using it from an MCP client is covered in the [README](../README.md).
 
+## Protocol revisions
+
+The server is built on MCP TypeScript SDK v2 and answers two protocol eras on the same
+endpoints:
+
+- **2026-07-28** (stateless): no `initialize`, no `Mcp-Session-Id`; the client's version
+  and capabilities ride in every request's `_meta`, and the SDK answers `server/discover`.
+  Over HTTP each such request is served by a fresh instance from `createMcpServer`
+  (`src/mcp-server.ts`) through `createMcpHandler(..., { legacy: 'reject' })`.
+- **2025-11-25 / 2025-06-18** (sessionful): `initialize` plus `Mcp-Session-Id`, served by
+  the same `NodeStreamableHTTPServerTransport` session map as before the upgrade, so
+  clients connected today see no change.
+
+`POST /mcp` routes between them with the SDK's own `isLegacyRequest()`; GET/DELETE are
+2025 session operations. Over stdio, `serveStdio()` makes the same decision from the
+connection's opening message.
+
+Because 2026-07-28 clients send `Mcp-Method`, `Mcp-Name` and per-argument `Mcp-Param-*`
+headers, CORS reflects the preflight's requested headers instead of a fixed list (bearer
+auth, no cookies, so this grants nothing). List results carry a shared cache hint
+(`LIST_CACHE`, 10 minutes, `public`).
+
+The 2025 path keeps protocol sessions in memory, and OAuth codes live in memory as well,
+so the hosted server still runs as a single instance.
+
 ## Authentication
 
 ### Direct API key (no OAuth)

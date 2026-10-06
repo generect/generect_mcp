@@ -2,12 +2,11 @@ import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { randomUUID } from 'node:crypto';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { registerTools } from './tools.js';
+import { NodeStreamableHTTPServerTransport, toNodeHandler, toWebRequest } from '@modelcontextprotocol/node';
+import { createMcpHandler, isInitializeRequest, isLegacyRequest } from '@modelcontextprotocol/server';
+import { createMcpServer as createMcpServerFor } from './mcp-server.js';
 import { toAuthHeader } from './auth/credential.js';
-import { VERSION, SERVER_NAME } from './version.js';
+import { VERSION } from './version.js';
 import {
   handleProtectedResourceMetadata,
   handleAuthorizationServerMetadata,
@@ -87,7 +86,10 @@ app.use(
     origin: true, // reflect the request Origin; bearer auth means no cookie risk
     credentials: false, // never combine reflected/`*` origin with credentials
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Authorization', 'Content-Type', 'Mcp-Session-Id', 'Mcp-Protocol-Version'],
+    // No fixed allowedHeaders: reflect what the preflight asks for. Protocol
+    // revision 2026-07-28 clients send Mcp-Method / Mcp-Name and per-argument
+    // Mcp-Param-* headers, a family no fixed list can name; with bearer auth and
+    // no cookies, reflecting request headers grants nothing.
     exposedHeaders: ['Mcp-Session-Id', 'WWW-Authenticate'],
     maxAge: 86400,
   }),
@@ -149,29 +151,40 @@ const wrapAsync =
   (fn: (req: any, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: (e?: unknown) => void) =>
     Promise.resolve(fn(req, res)).catch(next);
 
-const transports = new Map<string, StreamableHTTPServerTransport>();
+const transports = new Map<string, NodeStreamableHTTPServerTransport>();
 
 function createMcpServer() {
-  const server = new McpServer({ name: SERVER_NAME, version: VERSION });
-  registerTools(server, fetch, apiBase, apiKey);
-  return server;
+  return createMcpServerFor(fetch, apiBase, apiKey);
 }
 
-app.options('/mcp', (req: Request, res: Response) => {
-  res.set('Access-Control-Allow-Methods', 'GET, POST, DELETE');
-  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id');
-  res.status(204).end();
-});
+// Protocol revision 2026-07-28 is stateless: no initialize, no Mcp-Session-Id,
+// the client's version and capabilities ride in every request's _meta, and the
+// SDK answers server/discover itself. Each such request gets a fresh instance.
+// 2025-era clients (initialize + session) keep the sessionful wiring below
+// untouched, so nothing changes for the clients connected today; the predicate
+// isLegacyRequest() is the SDK's own router between the two.
+const modern = toNodeHandler(
+  createMcpHandler(() => createMcpServer(), {
+    legacy: 'reject',
+    onerror: err =>
+      console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'mcp_error', error: String(err) })),
+  }),
+);
 
 app.post(
   '/mcp',
   requireBearerAuth,
   wrapAsync(async (req: AuthenticatedRequest, res: Response) => {
+    if (!(await isLegacyRequest(await toWebRequest(req as any, req.body), req.body))) {
+      await modern(req as any, res as any, req.body);
+      return;
+    }
+
     const sessionId = (req.headers['mcp-session-id'] as string | undefined) ?? undefined;
     let transport = sessionId ? transports.get(sessionId) : undefined;
 
     if (!transport && isInitializeRequest(req.body)) {
-      transport = new StreamableHTTPServerTransport({
+      transport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: sessionId => {
           transports.set(sessionId, transport!);

@@ -1,7 +1,8 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
+import { requestHeader, progressToken, notifier } from './context.js';
 import { parseAuthHeader } from './auth/parse.js';
 import { toAuthHeader } from './auth/credential.js';
 import { annotate as annotateTestMode, isTestRequest } from './testmode.js';
@@ -140,23 +141,20 @@ function createRegistrar(server: McpServer): Registrar {
             throw err;
           }
         };
-        // registerTool is the current API; server.tool(...) is deprecated in the
-        // SDK and cannot carry a title, annotations or an output schema.
-        const register = (server as any).registerTool?.bind(server);
-        if (register) {
-          register(
-            name,
-            {
-              ...(meta ? { title: meta.title, annotations: meta.annotations, outputSchema: meta.outputSchema } : {}),
-              description: entry.description,
-              inputSchema: entry.schema,
-            },
-            wrapped,
-          );
-        } else {
-          // Older SDKs (and the test harness) only expose the positional form.
-          (server as any).tool(name, entry.description, entry.schema, wrapped);
-        }
+        server.registerTool(
+          name,
+          {
+            // v2 takes Standard Schema objects; raw shapes are deprecated (and
+            // rejected for outputSchema), so wrap both. z.object strips unknown
+            // keys exactly as v1's internal wrapping did.
+            ...(meta
+              ? { title: meta.title, annotations: meta.annotations, outputSchema: z.object(meta.outputSchema) }
+              : {}),
+            description: entry.description,
+            inputSchema: z.object(entry.schema ?? {}),
+          },
+          wrapped,
+        );
       }
     },
   };
@@ -362,17 +360,16 @@ function spendCeiling(book: PriceBook, op: Operation, units: number, args: any) 
 // A realtime lookup takes 5-60s and a default MCP client gives up at 60. A
 // heartbeat keeps the client from cancelling work the account is already
 // paying for. No-op unless the caller asked for progress.
-async function withProgress<T>(extra: any, label: string, work: () => Promise<T>): Promise<T> {
-  const token = extra?._meta?.progressToken;
-  if (token === undefined || token === null || typeof extra?.sendNotification !== 'function') return work();
+async function withProgress<T>(ctx: any, label: string, work: () => Promise<T>): Promise<T> {
+  const token = progressToken(ctx);
+  const notify = notifier(ctx);
+  if (token === undefined || !notify) return work();
   let ticks = 0;
   const send = (message: string) =>
-    extra
-      .sendNotification({
-        method: 'notifications/progress',
-        params: { progressToken: token, progress: ticks, message },
-      })
-      .catch(() => {});
+    notify({
+      method: 'notifications/progress',
+      params: { progressToken: token, progress: ticks, message },
+    }).catch(() => {});
   await send(`${label}: started`);
   const timer = setInterval(() => {
     ticks += 1;
@@ -1056,7 +1053,7 @@ function leadIdentifier(args: any, domainField: 'domain' | 'company'): Record<st
 export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: string, apiKey: string) {
   const registrar = createRegistrar(server);
   async function resolveAuthHeader(extra: any): Promise<string> {
-    const header = extra?.requestInfo?.headers?.authorization as string | undefined;
+    const header = requestHeader(extra, 'authorization');
     const parsed = parseAuthHeader(header);
 
     if (!parsed) {
@@ -2028,7 +2025,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         .enum(['email_find', 'phone_find', 'enrich_leads', 'enrich_companies'])
         .describe('What to do with the items. phone_find is by far the most expensive per record.'),
       items: z
-        .array(z.record(z.any()))
+        .array(z.record(z.string(), z.any()))
         .describe(
           'Max 50. email_find/phone_find: {lead_id} | {linkedin_url} | {first_name,last_name,domain|company}. enrich_leads: {id} | {linkedin_url} | {email}. enrich_companies: {id} | {linkedin_url} | {domain} | {name}.',
         ),
