@@ -1259,6 +1259,23 @@ test('search_leads: thin refused, then a realtime-only filter — auto still esc
   assert.ok(!('detail' in calls.find(c => /realtime/.test(c.url))!.body));
 });
 
+test('search_leads: a thin row with an empty location_name still shows city/country', async () => {
+  const row = { ...THIN_LEAD, location_name: null, location_city: null, location_country: 'Germany' };
+  const { tools } = harness([
+    TIER_ROUTE,
+    {
+      match: /search\/database\/leads\//,
+      body: {
+        data: { leads: [row, { ...row, location_city: 'Dusseldorf' }] },
+        meta: { amount_charged: 0, free_tier: FREE_TIER },
+      },
+    },
+  ]);
+  const r = out(await tools.search_leads({ job_titles: ['CEO'] }, EXTRA));
+  assert.equal(r.leads[0].location, 'Germany');
+  assert.equal(r.leads[1].location, 'Dusseldorf, Germany');
+});
+
 test('search_companies: thin by default; compact location is built from the HQ fields', async () => {
   const { tools, calls } = harness([
     TIER_ROUTE,
