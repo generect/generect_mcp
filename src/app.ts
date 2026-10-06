@@ -264,7 +264,24 @@ export function createApp(fetcher: typeof fetch = fetch): express.Express {
 
   // Terminal error handler: a thrown/rejected route now returns a response instead
   // of hanging the socket. Never leaks internals.
+  // A body the parsers refuse (malformed JSON, over the size limit, an unsupported
+  // charset) is the client's error, not ours: answer its 4xx status, malformed JSON
+  // as the JSON-RPC parse error both protocol eras specify.
   app.use((err: unknown, _req: Request, res: Response, _next: (e?: unknown) => void) => {
+    const e = err as { status?: unknown; expose?: unknown; type?: unknown; message?: unknown };
+    if (typeof e?.status === 'number' && e.status >= 400 && e.status < 500 && e.expose === true) {
+      console.log(
+        JSON.stringify({ ts: new Date().toISOString(), event: 'request_rejected', status: e.status, type: e.type }),
+      );
+      if (res.headersSent) return;
+      const parse = e.type === 'entity.parse.failed';
+      res.status(e.status).json({
+        jsonrpc: '2.0',
+        error: { code: parse ? -32700 : -32600, message: parse ? 'Parse error' : String(e.message) },
+        id: null,
+      });
+      return;
+    }
     console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'request_error', error: String(err) }));
     if (res.headersSent) return;
     res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });

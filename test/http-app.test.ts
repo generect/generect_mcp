@@ -193,3 +193,24 @@ for (const [version, sendsHeader] of [
     assert.equal(closed.status, 200, await closed.clone().text());
   });
 }
+
+test('express /mcp: malformed JSON is a 400 parse error, an oversized body a 413, neither a 500', async () => {
+  const post = (body: string) =>
+    fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: 'Bearer some-key',
+      },
+      body,
+    });
+  const broken = await post('{nope');
+  assert.equal(broken.status, 400);
+  assert.equal((await broken.json()).error.code, -32700);
+  const huge = await post(
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: { pad: 'x'.repeat(200_000) } }),
+  );
+  assert.equal(huge.status, 413);
+  assert.equal((await huge.json()).error.code, -32600);
+});
