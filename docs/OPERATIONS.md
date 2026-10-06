@@ -16,7 +16,9 @@ endpoints:
   clients connected today see no change.
 
 `POST /mcp` routes between them with the SDK's own `isLegacyRequest()`; GET/DELETE are
-2025 session operations. Over stdio, `serveStdio()` makes the same decision from the
+2025 session operations. A sessionless GET/DELETE with a 2026-07-28 `MCP-Protocol-Version`
+(a new client trying to resume a dropped stream) gets the SDK's 405, which the client
+reads as "no stream to resume". Over stdio, `serveStdio()` makes the same decision from the
 connection's opening message.
 
 Because 2026-07-28 clients send `Mcp-Method`, `Mcp-Name` and per-argument `Mcp-Param-*`

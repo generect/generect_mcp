@@ -175,6 +175,17 @@ export function createApp(fetcher: typeof fetch = fetch): express.Express {
     }),
   );
 
+  // A 2026-07-28 client has no session, so the only GET or DELETE it sends is an
+  // attempt to resume a dropped response stream. The SDK's strict endpoint answers
+  // it 405 (no stream here), which the client takes quietly; the session path's 400
+  // would make it throw. Same rule as the SDK's own: a version at or after the
+  // first modern revision. 2025 clients always send their session id here.
+  const FIRST_MODERN_PROTOCOL_VERSION = '2026-07-28';
+  const sessionlessModern = (req: Request) => {
+    const version = String(req.headers['mcp-protocol-version'] ?? '').trim();
+    return !req.headers['mcp-session-id'] && version >= FIRST_MODERN_PROTOCOL_VERSION;
+  };
+
   app.post(
     '/mcp',
     requireBearerAuth,
@@ -216,6 +227,10 @@ export function createApp(fetcher: typeof fetch = fetch): express.Express {
     '/mcp',
     requireBearerAuth,
     wrapAsync(async (req: AuthenticatedRequest, res: Response) => {
+      if (sessionlessModern(req)) {
+        await modern(req as any, res as any);
+        return;
+      }
       const sessionId = req.headers['mcp-session-id'] as string;
       const transport = sessionId ? transports.get(sessionId) : undefined;
       if (!transport) {
@@ -231,6 +246,10 @@ export function createApp(fetcher: typeof fetch = fetch): express.Express {
     '/mcp',
     requireBearerAuth,
     wrapAsync(async (req: AuthenticatedRequest, res: Response) => {
+      if (sessionlessModern(req)) {
+        await modern(req as any, res as any);
+        return;
+      }
       const sessionId = req.headers['mcp-session-id'] as string;
       const transport = sessionId ? transports.get(sessionId) : undefined;
       if (!transport) {

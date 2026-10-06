@@ -273,3 +273,30 @@ test('express /mcp: a 2025-03-26 session answers a batch, and a key change mid-s
   assert.deepEqual(await countUnder(4, 'key-before'), ['Token key-before']);
   assert.deepEqual(await countUnder(5, 'key-after'), ['Token key-after']);
 });
+
+test('express /mcp: a 2026-07-28 GET or DELETE (no session) gets the SDK 405, a 2025 one keeps its 400', async () => {
+  for (const method of ['GET', 'DELETE']) {
+    const modern = await fetch(`${base}/mcp`, {
+      method,
+      headers: { authorization: 'Bearer k', accept: 'text/event-stream', 'mcp-protocol-version': '2026-07-28' },
+    });
+    assert.equal(modern.status, 405, `${method} ${await modern.clone().text()}`);
+    await modern.text();
+    const old = await fetch(`${base}/mcp`, {
+      method,
+      headers: { authorization: 'Bearer k', accept: 'text/event-stream', 'mcp-protocol-version': '2025-06-18' },
+    });
+    assert.equal(old.status, 400, method);
+    await old.text();
+  }
+
+  // What the client does with it: resuming a stream on a 2026-07-28 connection ends
+  // quietly instead of throwing "Failed to open SSE stream".
+  const { client, transport } = await connect({ pin: '2026-07-28' }, 'resume-key');
+  try {
+    await (transport as any).resumeStream('lost-event-id');
+    assert.equal((await client.listTools()).tools.length, 17);
+  } finally {
+    await client.close();
+  }
+});
