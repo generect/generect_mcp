@@ -1,18 +1,22 @@
 name: Publish to MCP Registry
 
+# After the npm publish, not on the server.json push: server.json lists the npm
+# package, and the registry verifies it by reading `mcpName` from that exact npm
+# version. Racing the npm publish failed the registry step whenever npm was
+# slower. Every release bumps package.json and server.json together
+# (check-version), so "npm publish finished" is the release signal for both.
 on:
   workflow_dispatch: # Manual trigger
-  push:
-    branches:
-      - main
-    paths:
-      - 'server.json'
+  workflow_run:
+    workflows: ['Publish to npm']
+    types: [completed]
 
 permissions:
   contents: read
 
 jobs:
   publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -55,8 +59,16 @@ jobs:
             --domain generect.com \
             --private-key "${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}"
 
+      # The npm CDN can serve the previous packument for a minute after a publish,
+      # and the registry's ownership check reads it. Retry instead of failing.
       - name: Publish to MCP Registry
-        run: ./mcp-publisher publish
+        run: |
+          for i in 1 2 3 4 5 6; do
+            ./mcp-publisher publish && exit 0
+            echo "publish attempt $i failed; retrying in 30s"
+            sleep 30
+          done
+          exit 1
 
       - name: Verify the registry now serves this version
         run: |

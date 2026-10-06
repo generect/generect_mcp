@@ -1,9 +1,14 @@
 {
   "name": "generect-ultimate-mcp",
   "version": "0.10.1",
+  "mcpName": "com.generect/generect-mcp",
   "type": "module",
-  "description": "B2B lead and company data for AI agents: free audience sizing, cheap preview, search, enrich, email finder and validation, phone lookup and bulk jobs over the Generect API.",
+  "description": "Generect MCP server: B2B lead and company data for AI agents. Free search and audience sizing; pay only for the emails, phones and full profiles you keep.",
   "license": "MIT",
+  "author": {
+    "name": "Generect",
+    "url": "https://generect.com"
+  },
   "main": "dist/server.js",
   "files": [
     "dist",
@@ -20,7 +25,7 @@
   "bugs": {
     "url": "https://github.com/generect/generect_mcp/issues"
   },
-  "homepage": "https://github.com/generect/generect_mcp#readme",
+  "homepage": "https://docs.generect.com/integrations/mcp",
   "scripts": {
     "dev": "tsx src/server.ts",
     "dev:http": "tsx src/http.ts",
@@ -68,6 +73,13 @@
     "sales",
     "enrichment",
     "email-finder",
-    "linkedin"
+    "linkedin",
+    "mcp-server",
+    "ai-agents",
+    "lead-generation",
+    "sales-intelligence",
+    "b2b-data",
+    "phone-finder",
+    "claude"
   ]
 }
