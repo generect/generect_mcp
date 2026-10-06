@@ -1,0 +1,274 @@
+import 'dotenv/config';
+import express, { Request, Response } from 'express';
+import cors from 'cors';
+import { randomUUID } from 'node:crypto';
+import { NodeStreamableHTTPServerTransport, toNodeHandler, toWebRequest } from '@modelcontextprotocol/node';
+import { createMcpHandler, isInitializeRequest, isLegacyRequest } from '@modelcontextprotocol/server';
+import { createMcpServer as createMcpServerFor } from './mcp-server.js';
+import { toAuthHeader } from './auth/credential.js';
+import { VERSION } from './version.js';
+import {
+  handleProtectedResourceMetadata,
+  handleAuthorizationServerMetadata,
+  handleJwks,
+  oauthRouter,
+  requireBearerAuth,
+  AuthenticatedRequest,
+} from './auth/index.js';
+
+const apiBase = process.env.GENERECT_API_BASE || 'https://api.generect.com';
+const rawApiKey = process.env.GENERECT_API_KEY || '';
+const apiKey = toAuthHeader(rawApiKey);
+
+// Safety net: an unhandled rejection in an async route handler (e.g. a malformed
+// request) must NOT take down the whole process — that would drop every in-memory
+// MCP session and pending auth code. Log it and keep serving.
+process.on('unhandledRejection', reason => {
+  console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'unhandled_rejection', error: String(reason) }));
+});
+
+/**
+ * The whole HTTP surface: OAuth, discovery metadata and /mcp for both protocol
+ * eras. A function so tests can run the real routes against a fake Generect API
+ * (`fetcher`); production calls it once from start().
+ */
+export function createApp(fetcher: typeof fetch = fetch): express.Express {
+  const app = express();
+  // Trust the loopback reverse proxy (nginx) so req.ip reflects the real client
+  // address from X-Forwarded-For for per-IP rate limiting. Only loopback is
+  // trusted, so a direct client cannot spoof XFF.
+  app.set('trust proxy', 'loopback');
+
+  // Structured access logging for every request. nginx logs the transport view;
+  // this logs the application view (including the OAuth client_id and the MCP
+  // session), which is what you actually need to debug a failed integration.
+  // Never logs credentials: the Authorization header and any token/secret query
+  // parameters are omitted.
+  const LOG_REQUESTS = process.env.MCP_LOG_REQUESTS !== '0' && process.env.MCP_LOG !== '0';
+  app.use((req: Request, res: Response, next) => {
+    if (!LOG_REQUESTS) return next();
+    const started = Date.now();
+    res.on('finish', () => {
+      try {
+        const q = req.query as Record<string, unknown>;
+        console.error(
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            event: 'http_request',
+            method: req.method,
+            path: (req.originalUrl || req.url).split('?')[0],
+            status: res.statusCode,
+            ms: Date.now() - started,
+            ip: req.ip ?? null,
+            origin: (req.headers.origin as string) ?? null,
+            ua: (req.headers['user-agent'] as string) ?? null,
+            // OAuth/MCP correlation handles — identifiers, never secrets.
+            client_id: typeof q.client_id === 'string' ? q.client_id : undefined,
+            redirect_uri: typeof q.redirect_uri === 'string' ? q.redirect_uri : undefined,
+            session: (req.headers['mcp-session-id'] as string) ?? undefined,
+            authenticated: req.headers.authorization ? true : false,
+          }),
+        );
+      } catch {
+        /* logging must never break a request */
+      }
+    });
+    next();
+  });
+
+  app.use(express.json());
+  // CORS: this server authenticates with a Bearer/API token that the client sets
+  // explicitly — there is NO cookie/ambient credential — so restricting Origins adds
+  // no security and only breaks browser-based MCP connectors (Linear web/desktop,
+  // Claude.ai, MCP Inspector, ChatGPT). Those connectors fetch the .well-known
+  // discovery docs AND read the 401 `WWW-Authenticate` header from the browser, both
+  // of which require CORS. We reflect any Origin (never with credentials) and expose
+  // the protocol headers. This is what fixes Linear's "did not advertise a supported
+  // oauth flow": without exposed CORS the browser cannot read discovery or the 401.
+  app.use(
+    cors({
+      origin: true, // reflect the request Origin; bearer auth means no cookie risk
+      credentials: false, // never combine reflected/`*` origin with credentials
+      methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+      // No fixed allowedHeaders: reflect what the preflight asks for. Protocol
+      // revision 2026-07-28 clients send Mcp-Method / Mcp-Name and per-argument
+      // Mcp-Param-* headers, a family no fixed list can name; with bearer auth and
+      // no cookies, reflecting request headers grants nothing.
+      exposedHeaders: ['Mcp-Session-Id', 'WWW-Authenticate'],
+      maxAge: 86400,
+    }),
+  );
+
+  app.use(express.urlencoded({ extended: true }));
+
+  app.use(
+    express.json({
+      verify: (req: any, _res, buf) => {
+        req.rawBody = buf?.toString() ?? '';
+      },
+    }),
+  );
+
+  // OAuth discovery metadata is PUBLIC (no secrets) and must be readable cross-origin
+  // by any MCP client's browser. Serve it with an open CORS header, and at every
+  // path variant clients probe. Per RFC 8414/9728 the metadata URL for a resource
+  // with a path (`.../mcp`) is formed by INSERTING the well-known segment between
+  // host and path (`/.well-known/oauth-protected-resource/mcp`); different MCP
+  // clients also try a `/mcp`-prefixed form. Serving only the root path made
+  // clients that use path insertion (e.g. Linear) fail discovery with
+  // "did not advertise a supported oauth flow".
+  // (CORS + OPTIONS preflight are handled globally by the cors() middleware above.)
+  function metadata(handler: (req: Request, res: Response) => void) {
+    return (req: Request, res: Response) => {
+      res.set('Cache-Control', 'public, max-age=3600');
+      handler(req, res);
+    };
+  }
+  // PRM (RFC 9728): root + path-inserted + /mcp-prefixed.
+  const prmPaths = [
+    '/.well-known/oauth-protected-resource',
+    '/.well-known/oauth-protected-resource/mcp',
+    '/mcp/.well-known/oauth-protected-resource',
+  ];
+  // AS metadata (RFC 8414): root + path-inserted + /mcp-prefixed, plus the
+  // openid-configuration alias that the reference MCP SDK and some clients (ChatGPT)
+  // probe as a fallback. Body is our OAuth2 AS metadata; clients that reach the
+  // oauth-authorization-server URL first (Claude/Cursor/VS Code) never use this.
+  const asPaths = [
+    '/.well-known/oauth-authorization-server',
+    '/.well-known/oauth-authorization-server/mcp',
+    '/mcp/.well-known/oauth-authorization-server',
+    '/.well-known/openid-configuration',
+    '/.well-known/openid-configuration/mcp',
+    '/mcp/.well-known/openid-configuration',
+  ];
+  app.get(prmPaths, metadata(handleProtectedResourceMetadata));
+  app.get(asPaths, metadata(handleAuthorizationServerMetadata));
+  app.get('/.well-known/jwks.json', metadata(handleJwks));
+
+  app.use('/oauth', oauthRouter);
+
+  // Route a rejection from an async handler to the error middleware (and actually
+  // send a response) instead of letting it become an unhandled rejection that hangs
+  // the socket.
+  const wrapAsync =
+    (fn: (req: any, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: (e?: unknown) => void) =>
+      Promise.resolve(fn(req, res)).catch(next);
+
+  const transports = new Map<string, NodeStreamableHTTPServerTransport>();
+
+  function createMcpServer() {
+    return createMcpServerFor(fetcher, apiBase, apiKey);
+  }
+
+  // Protocol revision 2026-07-28 is stateless: no initialize, no Mcp-Session-Id,
+  // the client's version and capabilities ride in every request's _meta, and the
+  // SDK answers server/discover itself. Each such request gets a fresh instance.
+  // 2025-era clients (initialize + session) keep the sessionful wiring below
+  // untouched, so nothing changes for the clients connected today; the predicate
+  // isLegacyRequest() is the SDK's own router between the two.
+  const modern = toNodeHandler(
+    createMcpHandler(() => createMcpServer(), {
+      legacy: 'reject',
+      onerror: err =>
+        console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'mcp_error', error: String(err) })),
+    }),
+  );
+
+  app.post(
+    '/mcp',
+    requireBearerAuth,
+    wrapAsync(async (req: AuthenticatedRequest, res: Response) => {
+      if (!(await isLegacyRequest(await toWebRequest(req as any, req.body), req.body))) {
+        await modern(req as any, res as any, req.body);
+        return;
+      }
+
+      const sessionId = (req.headers['mcp-session-id'] as string | undefined) ?? undefined;
+      let transport = sessionId ? transports.get(sessionId) : undefined;
+
+      if (!transport && isInitializeRequest(req.body)) {
+        transport = new NodeStreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: sessionId => {
+            transports.set(sessionId, transport!);
+          },
+        });
+        transport.onclose = () => {
+          if (transport!.sessionId) {
+            transports.delete(transport!.sessionId);
+          }
+        };
+        const server = createMcpServer();
+        await server.connect(transport);
+      }
+
+      if (!transport) {
+        res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No session' }, id: null });
+        return;
+      }
+
+      await transport.handleRequest(req as any, res as any, req.body);
+    }),
+  );
+
+  app.get(
+    '/mcp',
+    requireBearerAuth,
+    wrapAsync(async (req: AuthenticatedRequest, res: Response) => {
+      const sessionId = req.headers['mcp-session-id'] as string;
+      const transport = sessionId ? transports.get(sessionId) : undefined;
+      if (!transport) {
+        res.status(400).send('Invalid or missing session ID');
+        return;
+      }
+      (req as any).apiToken = req.apiToken;
+      await transport.handleRequest(req as any, res as any);
+    }),
+  );
+
+  app.delete(
+    '/mcp',
+    requireBearerAuth,
+    wrapAsync(async (req: AuthenticatedRequest, res: Response) => {
+      const sessionId = req.headers['mcp-session-id'] as string;
+      const transport = sessionId ? transports.get(sessionId) : undefined;
+      if (!transport) {
+        res.status(400).send('Invalid or missing session ID');
+        return;
+      }
+      (req as any).apiToken = req.apiToken;
+      await transport.handleRequest(req as any, res as any);
+    }),
+  );
+
+  app.get('/', (req: Request, res: Response) => {
+    res.json({
+      name: 'Generect MCP Server',
+      version: VERSION,
+      endpoints: {
+        mcp: '/mcp',
+        oauth_authorize: '/oauth/authorize',
+        oauth_token: '/oauth/token',
+        oauth_register: '/oauth/register',
+        protected_resource_metadata: '/.well-known/oauth-protected-resource',
+        authorization_server_metadata: '/.well-known/oauth-authorization-server',
+        jwks: '/.well-known/jwks.json',
+      },
+    });
+  });
+
+  app.get('/health', (req: Request, res: Response) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  // Terminal error handler: a thrown/rejected route now returns a response instead
+  // of hanging the socket. Never leaks internals.
+  app.use((err: unknown, _req: Request, res: Response, _next: (e?: unknown) => void) => {
+    console.error(JSON.stringify({ ts: new Date().toISOString(), event: 'request_error', error: String(err) }));
+    if (res.headersSent) return;
+    res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
+  });
+
+  return app;
+}
