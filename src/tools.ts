@@ -269,17 +269,25 @@ function apiError(err: any) {
   const status = err?.status ?? null;
   const detail = err?.detail ?? null;
   const insufficient = typeof detail === 'string' && /insufficient funds/i.test(detail);
+  const text = typeof detail === 'string' ? detail : JSON.stringify(detail ?? '');
+  // Only the API's own thin-tier messages ("\"thin\" search is not ...") — any
+  // other "... is not enabled" error from any other tool is not about thin.
+  const quotaSpent = status === 429 && /free search quota/i.test(text);
+  const thinUnavailable =
+    /thin\\?"? search is not (enabled|available)/i.test(text) || /`detail` filter is not supported/i.test(text);
+  const nextStep = insufficient
+    ? 'The account is out of credits. Nothing was charged. Call get_balance, tell the user the balance, and stop — do not retry.'
+    : quotaSpent
+      ? 'You asked for detail "thin" explicitly and today\'s free thin-row quota is used up; nothing was charged. It resets at 00:00 UTC. Continuing now means detail "full", billed per row — ask the user before switching.'
+      : thinUnavailable
+        ? 'You asked for detail "thin" explicitly and it is not available for this account. Nothing was charged. Repeat with detail "full" (or without detail) only if the user accepts the per-row price (get_balance shows it).'
+        : undefined;
   return {
     ...result({
       error: String(err?.message ?? err),
       status,
       detail,
-      ...(insufficient
-        ? {
-            next_step:
-              'The account is out of credits. Nothing was charged. Call get_balance, tell the user the balance, and stop — do not retry.',
-          }
-        : {}),
+      ...(nextStep ? { next_step: nextStep } : {}),
     }),
     isError: true,
   } as any;
@@ -419,7 +427,7 @@ function modeParam(what: string) {
   return z
     .enum(['auto', 'database', 'realtime'])
     .describe(
-      `Data mode. "database" = cached, sub-second, cheaper, free counts, core filters only. "realtime" = live LinkedIn lookup, 5–60s, pricier, supports every filter. "auto" (default) tries database first and only escalates to realtime if a filter you passed is unsupported there — an escalation is reported in the response. Pick "database" explicitly when ${what} and cost matters more than freshness.`,
+      `Data mode. "database" = Generect's own index: sub-second, free counts, free thin rows (see detail) or cheaper full rows; it accepts a subset of the filters today and names any it rejects. "realtime" = live LinkedIn lookup, 5–60s, billed per row, accepts every realtime filter. "auto" (default) tries database first and escalates to realtime only if a filter you passed is rejected there (the escalation is reported, and is refused above the per-call spend ceiling). Pick "database" explicitly when ${what} and cost matters more than freshness.`,
     )
     .optional();
 }
@@ -435,27 +443,190 @@ async function callWithMode(
     dbUrl: string;
     rtUrl: string;
     body: unknown;
+    /** Body for the live endpoint when it differs (e.g. without `detail`, which is database-only). */
+    rtBody?: unknown;
+    /**
+     * Checked right before an `auto` escalation. A database call can be free
+     * (thin) while the live one bills per row, so the spend ceiling priced for
+     * the cheap attempt says nothing about the escalated one. Return a tool
+     * result to stop instead of escalating.
+     */
+    beforeEscalate?: () => unknown;
+    /**
+     * Full-row database body to fall back to when the server refuses a
+     * DEFAULTED thin request for this account (tier off, or a custom-contract
+     * account whose search is priced by its contract). That is exactly what
+     * 0.9.0 sent, so the caller keeps working; `beforeFull` re-checks the spend
+     * ceiling at the full price first. Omitted when the caller asked for thin
+     * explicitly — then the refusal is the answer.
+     */
+    fullBody?: unknown;
+    beforeFull?: () => unknown;
     headers: Record<string, string>;
     timeoutMs: number;
   },
-): Promise<{ data: any; mode: 'database' | 'realtime'; escalated_because?: string[] }> {
+): Promise<{
+  data: any;
+  mode: 'database' | 'realtime';
+  escalated_because?: string[];
+  stopped?: unknown;
+  thin_unavailable?: string;
+}> {
   const { mode, dbUrl, rtUrl, body, headers, timeoutMs } = args;
-  const init = { method: 'POST', headers, body: JSON.stringify(body) } as RequestInit;
+  const init = (b: unknown) => ({ method: 'POST', headers, body: JSON.stringify(b) }) as RequestInit;
+  const rtInit = init(args.rtBody ?? body);
   if (mode === 'realtime') {
-    return { data: await callApi(fetcher, rtUrl, init, timeoutMs), mode: 'realtime' };
+    return { data: await callApi(fetcher, rtUrl, rtInit, timeoutMs), mode: 'realtime' };
   }
+  let thinUnavailable: string | undefined;
   try {
-    return { data: await callApi(fetcher, dbUrl, init, timeoutMs), mode: 'database' };
-  } catch (err: any) {
+    return { data: await callApi(fetcher, dbUrl, init(body), timeoutMs), mode: 'database' };
+  } catch (first: any) {
+    let err = first;
+    const refusal = args.fullBody !== undefined ? thinRefusal(err) : null;
+    if (refusal) {
+      const stopped = args.beforeFull?.();
+      if (stopped) return { data: null, mode: 'database', stopped, thin_unavailable: refusal };
+      thinUnavailable = refusal;
+      try {
+        return {
+          data: await callApi(fetcher, dbUrl, init(args.fullBody), timeoutMs),
+          mode: 'database',
+          thin_unavailable: refusal,
+        };
+      } catch (second: any) {
+        err = second; // e.g. a realtime-only filter: same escalation rules as below
+      }
+    }
     const blocked = unsupportedFilters(err?.detail);
     // An explicit database request is never silently upgraded to a pricier call.
-    if (mode === 'database' || blocked.length === 0) throw err;
+    // Nor is any request because of `detail`: that key is ours, database-only, and
+    // an API that does not know it is refusing the thin tier, not asking for the
+    // live endpoint (a defaulted thin was already retried as full above).
+    if (mode === 'database' || blocked.length === 0 || blocked.includes('detail')) throw err;
+    const stopped = args.beforeEscalate?.();
+    if (stopped)
+      return { data: null, mode: 'database', escalated_because: blocked, stopped, thin_unavailable: thinUnavailable };
     return {
-      data: await callApi(fetcher, rtUrl, init, timeoutMs),
+      data: await callApi(fetcher, rtUrl, rtInit, timeoutMs),
       mode: 'realtime',
       escalated_because: blocked,
+      thin_unavailable: thinUnavailable,
     };
   }
+}
+
+/** Why the server refused a thin request, or null when it didn't. */
+function thinRefusal(err: any): string | null {
+  const text = typeof err?.detail === 'string' ? err.detail : JSON.stringify(err?.detail ?? '');
+  // Today's quota of free rows is spent: the call a default search made on
+  // 0.9.0 (full, billed) is still what the caller gets, under the spend ceiling.
+  if (err?.status === 429 && /free search quota/i.test(text)) return 'quota_exhausted';
+  if (err?.status !== 400) return null;
+  if (/not available on custom-contract/i.test(text)) return 'custom_contract';
+  if (/search is not enabled/i.test(text)) return 'not_enabled';
+  // An API that predates the thin tier names `detail` as an unknown database
+  // filter ("... not supported in database mode ... Use realtime endpoint").
+  // That must NOT read as a realtime-only filter — auto mode would escalate every
+  // default search to the pricier live endpoint. Measured on prod 2026-09-24.
+  if (unsupportedFilters(err?.detail).includes('detail')) return 'not_supported';
+  return null;
+}
+
+function searchOp(mode: 'database' | 'realtime', thin: boolean): Operation {
+  if (mode === 'realtime') return 'search_realtime';
+  return thin ? 'search_thin' : 'search_database';
+}
+
+/** Quota facts for a thin search, straight from the API's meta. */
+/**
+ * Thin only when the API says so: a response is labelled free on the strength
+ * of its own `meta.free_tier`, never because we asked for thin — an API that
+ * ignored the key would otherwise have billed rows reported as free.
+ */
+function servedThin(mode: 'database' | 'realtime', asked: boolean, data: any, thinUnavailable?: string): boolean {
+  return mode === 'database' && asked && !thinUnavailable && data?.meta?.free_tier != null;
+}
+
+const THIN_UNAVAILABLE_NOTES: Record<string, string> = {
+  custom_contract:
+    'Free thin search does not apply to this account: search is priced by its contract, so these are full rows billed as before.',
+  not_enabled: 'Free thin search is not enabled on the server yet, so these are full rows billed per row, as before.',
+  not_supported: 'This API version has no free thin search yet, so these are full rows billed per row, as before.',
+  quota_exhausted:
+    "Today's free thin-row quota is used up (it resets at 00:00 UTC), so these are full rows billed per row. Tell the user if they care about cost.",
+};
+
+function thinFacts(
+  mode: 'database' | 'realtime',
+  thin: boolean,
+  data: any,
+  thinUnavailable?: string,
+): Record<string, unknown> {
+  if (thinUnavailable) {
+    return {
+      detail: 'full',
+      thin_unavailable: thinUnavailable,
+      thin_note: THIN_UNAVAILABLE_NOTES[thinUnavailable] ?? THIN_UNAVAILABLE_NOTES.not_enabled,
+    };
+  }
+  if (mode !== 'database' || !thin) return {};
+  return {
+    detail: 'thin',
+    free_tier: data?.meta?.free_tier ?? null,
+    thin_note:
+      'Thin rows: free, but no LinkedIn URL, domain or contacts. Spend only on the rows you keep — generate_email takes the lead id; enrich_lead / enrich_company return the full record.',
+  };
+}
+
+function notSent(why: string) {
+  return result({
+    status: 'not_sent',
+    cost: { operation: 'none', amount_charged_usd: 0, billed: 'nothing was sent, nothing was charged' },
+    why,
+  });
+}
+
+// ``detail`` on a database search. "thin" is the free tier (api_parser
+// search.v1.free_tier): whitelisted fields, $0, daily per-account quota. The
+// flat leads/companies database endpoints accept it; realtime and the
+// two-level company-leads endpoint do not, so it is only ever sent there.
+type Detail = 'thin' | 'full';
+
+function detailParam(what: 'lead' | 'company') {
+  const thin =
+    what === 'lead'
+      ? 'id, name, job_title, seniority, location, company name/id/industry/country'
+      : 'id, name, industry, headcount_range, HQ country/city, company_type, founded_year';
+  return z
+    .enum(['thin', 'full'])
+    .describe(
+      `Row detail for the database search. Thin rows are FREE — ${thin}; no LinkedIn URL, domain, contacts or history — up to a daily per-account row quota that resets at 00:00 UTC. Omitted (default): thin while the free tier is available; once it is not (quota spent, a custom-contract account, a server without the tier) the search continues as before — full rows billed per row, marked thin_unavailable in the result, under the spend ceiling. "thin": free rows only — never billed, never escalated to realtime; a spent quota is a 429 and a realtime-only filter is an error. "full": the whole record, billed per row. Browse thin, then spend only on the rows you keep: generate_email takes the lead id directly, enrich_* gives the full record.`,
+    )
+    .optional();
+}
+
+/** What a search will actually send: thin only where the API accepts it. */
+function resolveDetail(
+  args: any,
+  opts: { twoLevel?: boolean },
+): { thin: boolean; defaulted?: boolean; explicit?: boolean; conflict?: string } {
+  const asked: Detail | undefined = args?.detail;
+  const mode: Mode = args?.mode ?? 'auto';
+  if (asked === 'thin' && mode === 'realtime') {
+    return {
+      thin: false,
+      conflict: 'detail "thin" exists only in database mode; realtime always returns full, billed rows.',
+    };
+  }
+  if (asked === 'thin' && opts.twoLevel) {
+    return {
+      thin: false,
+      conflict: 'detail "thin" is not available with company_filters (two-level search); drop one of them.',
+    };
+  }
+  const thin = (asked ?? 'thin') === 'thin' && mode !== 'realtime' && !opts.twoLevel;
+  return { thin, defaulted: thin && asked === undefined, explicit: thin && asked === 'thin' };
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +695,9 @@ const CONTROL_FIELDS = [
   'compact',
   'timeout_ms',
   'mode',
+  // Set on the database body by the search tools themselves (resolveDetail),
+  // never forwarded raw: realtime and company-leads reject it.
+  'detail',
   'limit',
   'offset',
   'company_filters',
@@ -585,7 +759,7 @@ function compactLead(lead: any) {
     company_name: lead.company_name ?? lead.raw_company_name ?? null,
     company_domain: lead.company_domain ?? domainOf(lead.company_website) ?? null,
     industry: lead.company_industry ?? lead.industry ?? null,
-    location: lead.location ?? lead.job_location ?? null,
+    location: lead.location ?? lead.job_location ?? lead.location_name ?? null,
     linkedin_url: lead.linkedin_url ?? null,
   };
 }
@@ -608,7 +782,7 @@ function compactCompany(company: any) {
     industry: company.industry ?? company.company_industry ?? null,
     headcount_range: company.headcount_range ?? null,
     headcount_exact: company.headcount_exact ?? null,
-    location: company.location ?? null,
+    location: company.location ?? ([company.hq_city, company.hq_country].filter(Boolean).join(', ') || null),
     linkedin_url: company.linkedin_link ?? company.linkedin_url ?? null,
   };
 }
@@ -690,7 +864,7 @@ const LEAD_FILTERS = {
   exclude_names: z
     .array(z.string())
     .describe(
-      'Skip leads by full name. KNOWN ISSUE: in database mode any non-empty value collapses the result set to 0 (verified 2026-08-09); it behaves correctly in realtime mode. Prefer exclude_ids, or filter names out yourself after the search.',
+      'Skip leads by full name. Works in both modes (the database-mode bug that returned 0 rows was fixed in the API on 2026-08-13, PRO-1333). exclude_ids is still the more reliable way to paginate.',
     )
     .optional(),
   exclude_ids: z
@@ -1201,7 +1375,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'search_leads',
-    `Return leads (people) matching an ICP. ${priceTag('search_database')} Run count_leads first — it is free and tells you both the audience size and what this call will cost. Returns profile data only: no email or phone. Use generate_email / find_phone on the ids you actually want. Ordering is not stable, so paginate by passing ids you already have in exclude_ids rather than by offset.`,
+    `Return leads (people) matching an ICP. FREE by default while the account has free thin rows left today (daily quota; see detail — pass detail "thin" to guarantee $0). detail "full" is ${priceTag('search_database').replace(/^BILLABLE — /, 'billable, ')} Realtime, or an auto escalation to it, is billed per row too. Run count_leads first — it is free and sizes the audience. Rows never include email or phone: call generate_email (it takes the lead id) or find_phone only on the ids you keep. Ordering is not stable, so paginate by passing ids you already have in exclude_ids rather than by offset.`,
     {
       ...LEAD_FILTERS,
       ...LEGACY_LEAD_SHAPE,
@@ -1211,6 +1385,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         .describe('Optional: only return leads at companies matching these filters (two-level ICP).')
         .optional(),
       mode: modeParam('freshness is not critical'),
+      detail: detailParam('lead'),
       compact: compactParam('lead'),
       ...PAGING,
     },
@@ -1227,9 +1402,13 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const gate = gateVocabulary(args, leadFilters, companyFilters);
         if (gate.blocking.length > 0) return vocabularyBlocked(gate.blocking);
 
+        const detail = resolveDetail(args, { twoLevel });
+        if (detail.conflict) return notSent(detail.conflict);
+
         const book = await priceBook(Authorization, headers);
         // Price the worst case in the mode we are most likely to end up in.
-        const likelyOp: Operation = (args?.mode ?? 'auto') === 'realtime' ? 'search_realtime' : 'search_database';
+        const likelyOp: Operation =
+          (args?.mode ?? 'auto') === 'realtime' ? 'search_realtime' : detail.thin ? 'search_thin' : 'search_database';
         const overCeiling = spendCeiling(book, likelyOp, rows, args);
         if (overCeiling) return overCeiling;
         // In the two-level shape the row limit belongs to the lead criteria.
@@ -1237,16 +1416,26 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           ? { company_search_criteria: companyFilters, lead_search_criteria: leadFilters }
           : leadFilters;
 
-        const { data, mode, escalated_because } = await withProgress(extra, 'search_leads', () =>
-          callWithMode(fetcher, {
-            mode: args?.mode ?? 'auto',
-            dbUrl: `${apiBase}${V1}/search/database/${path}/`,
-            rtUrl: `${apiBase}${V1}/search/realtime/${path}/`,
-            body,
-            headers,
-            timeoutMs: timeoutOf(args),
-          }),
+        const { data, mode, escalated_because, stopped, thin_unavailable } = await withProgress(
+          extra,
+          'search_leads',
+          () =>
+            callWithMode(fetcher, {
+              // An explicit thin asks for $0: it never escalates to the billed live endpoint.
+              mode: detail.explicit ? 'database' : (args?.mode ?? 'auto'),
+              dbUrl: `${apiBase}${V1}/search/database/${path}/`,
+              rtUrl: `${apiBase}${V1}/search/realtime/${path}/`,
+              body: detail.thin ? { ...(body as object), detail: 'thin' } : body,
+              rtBody: body,
+              beforeEscalate: () => spendCeiling(book, 'search_realtime', rows, args),
+              ...(detail.defaulted
+                ? { fullBody: body, beforeFull: () => spendCeiling(book, 'search_database', rows, args) }
+                : {}),
+              headers,
+              timeoutMs: timeoutOf(args),
+            }),
         );
+        if (stopped) return stopped;
 
         const leads: any[] = data?.data?.leads ?? data?.data ?? [];
         const compact = args?.compact !== false;
@@ -1264,7 +1453,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
               }
             : {}),
           vocabulary_warnings: gate.warnings.length > 0 ? gate.warnings : undefined,
-          cost: receipt(mode === 'database' ? 'search_database' : 'search_realtime', data),
+          cost: receipt(searchOp(mode, servedThin(mode, detail.thin, data, thin_unavailable)), data),
+          ...thinFacts(mode, servedThin(mode, detail.thin, data, thin_unavailable), data, thin_unavailable),
           leads: Array.isArray(leads) ? (compact ? leads.map(compactLead) : leads) : leads,
           next_page_args: nextPageArgs(args, Array.isArray(leads) ? leads : []),
         });
@@ -1278,11 +1468,12 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'search_companies',
-    `Return companies matching an ICP. ${priceTag('search_database')} Run count_companies first. Note that headcount_range is a snapshot taken when the record was indexed and can lag the company's current size; the filter itself is applied at query time.`,
+    `Return companies matching an ICP. FREE by default while the account has free thin rows left today (daily quota; see detail — pass detail "thin" to guarantee $0); thin rows carry no domain — use enrich_company on the ones you keep. detail "full" is ${priceTag('search_database').replace(/^BILLABLE — /, 'billable, ')} Realtime is billed per row too. Run count_companies first. Note that headcount_range is a snapshot taken when the record was indexed and can lag the company's current size; the filter itself is applied at query time.`,
     {
       ...COMPANY_FILTERS,
       ...LEGACY_COMPANY_SHAPE,
       mode: modeParam('freshness is not critical'),
+      detail: detailParam('company'),
       compact: compactParam('company'),
       ...PAGING,
     },
@@ -1296,21 +1487,35 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         const gate = gateVocabulary(args, body);
         if (gate.blocking.length > 0) return vocabularyBlocked(gate.blocking);
 
+        const detail = resolveDetail(args, {});
+        if (detail.conflict) return notSent(detail.conflict);
+
         const book = await priceBook(Authorization, headers);
-        const likelyOp: Operation = (args?.mode ?? 'auto') === 'realtime' ? 'search_realtime' : 'search_database';
+        const likelyOp: Operation =
+          (args?.mode ?? 'auto') === 'realtime' ? 'search_realtime' : detail.thin ? 'search_thin' : 'search_database';
         const overCeiling = spendCeiling(book, likelyOp, rows, args);
         if (overCeiling) return overCeiling;
 
-        const { data, mode, escalated_because } = await withProgress(extra, 'search_companies', () =>
-          callWithMode(fetcher, {
-            mode: args?.mode ?? 'auto',
-            dbUrl: `${apiBase}${V1}/search/database/companies/`,
-            rtUrl: `${apiBase}${V1}/search/realtime/companies/`,
-            body,
-            headers,
-            timeoutMs: timeoutOf(args),
-          }),
+        const { data, mode, escalated_because, stopped, thin_unavailable } = await withProgress(
+          extra,
+          'search_companies',
+          () =>
+            callWithMode(fetcher, {
+              // An explicit thin asks for $0: it never escalates to the billed live endpoint.
+              mode: detail.explicit ? 'database' : (args?.mode ?? 'auto'),
+              dbUrl: `${apiBase}${V1}/search/database/companies/`,
+              rtUrl: `${apiBase}${V1}/search/realtime/companies/`,
+              body: detail.thin ? { ...body, detail: 'thin' } : body,
+              rtBody: body,
+              beforeEscalate: () => spendCeiling(book, 'search_realtime', rows, args),
+              ...(detail.defaulted
+                ? { fullBody: body, beforeFull: () => spendCeiling(book, 'search_database', rows, args) }
+                : {}),
+              headers,
+              timeoutMs: timeoutOf(args),
+            }),
         );
+        if (stopped) return stopped;
         const companies: any[] = data?.data?.companies ?? data?.data ?? [];
         const compact = args?.compact !== false;
         return result({
@@ -1326,7 +1531,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
               }
             : {}),
           vocabulary_warnings: gate.warnings.length > 0 ? gate.warnings : undefined,
-          cost: receipt(mode === 'database' ? 'search_database' : 'search_realtime', data),
+          cost: receipt(searchOp(mode, servedThin(mode, detail.thin, data, thin_unavailable)), data),
+          ...thinFacts(mode, servedThin(mode, detail.thin, data, thin_unavailable), data, thin_unavailable),
           companies: Array.isArray(companies) ? (compact ? companies.map(compactCompany) : companies) : companies,
           next_page_args: nextPageArgs(args, Array.isArray(companies) ? companies : []),
         });
@@ -2092,6 +2298,9 @@ function estimateBlock(book: PriceBook, mode: 'database' | 'realtime', count: un
   const total = typeof count === 'number' ? count : null;
   return {
     priced_at: book.account_specific ? `your account tier ${book.tier ?? '?'}` : 'published list prices',
+    ...(mode === 'database'
+      ? { thin_search: 'free — search with detail "thin" (the default) costs $0 up to a daily row quota' }
+      : {}),
     search_usd_per_row: round(book.prices[searchOp]),
     search_cost_for: Object.fromEntries(rows.map(n => [`${n}_rows`, estimate(book, searchOp, n)])),
     preview_usd_per_row: round(book.prices.preview),

@@ -7,6 +7,7 @@ export type Operation =
   | 'count_database'
   | 'count_realtime'
   | 'search_database'
+  | 'search_thin'
   | 'search_realtime'
   | 'enrich_database'
   | 'enrich_realtime'
@@ -26,6 +27,9 @@ const LIST_PRICE_USD: Record<Operation, number> = {
   count_database: 0,
   count_realtime: 0.02,
   search_database: 0.0067,
+  // `detail: "thin"` on a database search: free up to a per-account daily row
+  // quota, then the API answers 429 — it never bills. Flat across tiers.
+  search_thin: 0,
   search_realtime: 0.02,
   enrich_database: 0.0067,
   enrich_realtime: 0.02,
@@ -47,6 +51,7 @@ const BILLING_UNIT: Record<Operation, string> = {
   count_database: 'always free',
   count_realtime: 'flat, per request, even when the count is 0',
   search_database: 'per returned row (0 rows costs $0)',
+  search_thin: 'free — thin rows up to a daily per-account quota, then 429 (never billed)',
   search_realtime: 'per returned row (0 rows costs $0)',
   enrich_database: 'per record found (not-found is refunded)',
   enrich_realtime: 'per record found (not-found is refunded)',
@@ -134,6 +139,7 @@ export async function fetchPriceBook(
       if (Number.isFinite(value) && value >= 0) for (const op of ops) prices[op] = value;
     }
     prices.count_database = 0; // free by contract, whatever the tier says
+    prices.search_thin = 0; // same: the thin tier writes no transaction at all
     const book: PriceBook = { prices, account_specific: true, tier: data?.current_tier?.name ?? null };
     cache.set(key, { book, ts: Date.now() });
     return book;
