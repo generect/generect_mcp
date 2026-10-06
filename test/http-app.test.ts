@@ -214,3 +214,62 @@ test('express /mcp: malformed JSON is a 400 parse error, an oversized body a 413
   assert.equal(huge.status, 413);
   assert.equal((await huge.json()).error.code, -32600);
 });
+
+// Two more 2025 behaviours 0.10.1 had, measured on it and pinned here: a 2025-03-26
+// client may send a JSON-RPC batch on its session, and a client that refreshes its
+// token mid-session is billed under the token it sends now, not the one it opened with.
+test('express /mcp: a 2025-03-26 session answers a batch, and a key change mid-session bills the new key', async () => {
+  resetPriceBookCache();
+  let sessionId: string | null = null;
+  const post = (body: unknown, key: string) =>
+    fetch(`${base}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${key}`,
+        ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  const init = await post(
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'old', version: '0' } },
+    },
+    'key-before',
+  );
+  sessionId = init.headers.get('mcp-session-id');
+  assert.ok(sessionId);
+  await init.text();
+  assert.equal((await post({ jsonrpc: '2.0', method: 'notifications/initialized' }, 'key-before')).status, 202);
+
+  const batch = await post(
+    [
+      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+      { jsonrpc: '2.0', id: 3, method: 'ping' },
+    ],
+    'key-before',
+  );
+  assert.equal(batch.status, 200);
+  const answered = messages(await batch.text()).flat();
+  assert.equal(answered.find(m => m.id === 2)?.result.tools.length, 17, JSON.stringify(answered).slice(0, 300));
+  assert.deepEqual(answered.find(m => m.id === 3)?.result, {});
+
+  // The same tool on the same session, first under the key the session opened with,
+  // then under a refreshed one: each call must carry the key its own request sent.
+  const countUnder = async (id: number, key: string) => {
+    seen.length = 0;
+    const call = await post(
+      { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'count_leads', arguments: { job_titles: ['CEO'] } } },
+      key,
+    );
+    assert.equal(call.status, 200);
+    await call.text();
+    return seen.filter(s => /search\/database\/leads\/count/.test(s.url)).map(s => s.authorization);
+  };
+  assert.deepEqual(await countUnder(4, 'key-before'), ['Token key-before']);
+  assert.deepEqual(await countUnder(5, 'key-after'), ['Token key-after']);
+});
