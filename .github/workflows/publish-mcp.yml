@@ -22,11 +22,27 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # publish-npm also succeeds as a no-op when the version is already on npm
+      # (a dependency bump, a workflow edit, a hand-made release). The registry
+      # refuses a version it already has, so skip instead of failing six times.
+      - name: Skip a version the registry already has
+        id: already
+        run: |
+          NAME=$(node -p "require('./server.json').name")
+          VERSION=$(node -p "require('./server.json').version")
+          ENC=$(node -p "encodeURIComponent('$NAME')")
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.modelcontextprotocol.io/v0.1/servers/$ENC/versions/$VERSION")
+          if [ "$CODE" = "200" ]; then
+            echo "::notice::$NAME $VERSION is already in the registry; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       # Pinned. v1.0.0 requested an OIDC audience the registry stopped accepting
       # ("invalid audience: expected https://registry.modelcontextprotocol.io,
       # got [mcp-registry]"), which silently failed every run from late 2025
       # onward while the registry entry stayed on 0.1.2.
       - name: Download MCP Publisher
+        if: steps.already.outputs.skip != 'true'
         env:
           PUBLISHER_VERSION: v1.8.1
         run: |
@@ -38,6 +54,7 @@ jobs:
       # generect.com domain. GitHub OIDC can only vouch for `io.github.generect/*`,
       # so domain auth is the only method that can publish this name.
       - name: Check domain signing key is configured
+        if: steps.already.outputs.skip != 'true'
         env:
           KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
         run: |
@@ -54,6 +71,7 @@ jobs:
           fi
 
       - name: Authenticate against the generect.com domain
+        if: steps.already.outputs.skip != 'true'
         run: |
           ./mcp-publisher login dns \
             --domain generect.com \
@@ -62,6 +80,7 @@ jobs:
       # The npm CDN can serve the previous packument for a minute after a publish,
       # and the registry's ownership check reads it. Retry instead of failing.
       - name: Publish to MCP Registry
+        if: steps.already.outputs.skip != 'true'
         run: |
           for i in 1 2 3 4 5 6; do
             ./mcp-publisher publish && exit 0
