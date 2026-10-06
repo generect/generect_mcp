@@ -116,3 +116,80 @@ for (const version of ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']) 
     assert.equal(payload.result.protocolVersion, version);
   });
 }
+
+// A whole hand-written 2025 session, the way older clients speak it: 2025-03-26 and
+// 2024-11-05 never send Mcp-Protocol-Version, 2025-06-18 and later send their own
+// (non-modern) version. Every follow-up must stay on the session path: only a
+// `_meta` protocol-version claim routes to 2026-07-28, so a progressToken in `_meta`
+// must not.
+function messages(text: string): any[] {
+  if (!text.includes('data:')) return [JSON.parse(text)];
+  return text
+    .split('\n')
+    .filter(line => line.startsWith('data:'))
+    .map(line => JSON.parse(line.slice(5).trim()));
+}
+
+for (const [version, sendsHeader] of [
+  ['2025-03-26', false],
+  ['2024-11-05', false],
+  ['2025-06-18', true],
+  ['2025-11-25', true],
+] as const) {
+  test(`express /mcp: a full ${version} session (${sendsHeader ? 'own' : 'no'} protocol header) stays on the session path`, async () => {
+    resetPriceBookCache();
+    seen.length = 0;
+    const key = `old-${version}`;
+    let sessionId: string | null = null;
+    const post = (body: unknown) =>
+      fetch(`${base}/mcp`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          authorization: `Bearer ${key}`,
+          ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
+          ...(sessionId && sendsHeader ? { 'mcp-protocol-version': version } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+
+    const init = await post({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: version, capabilities: {}, clientInfo: { name: 'old', version: '0' } },
+    });
+    assert.equal(init.status, 200, await init.clone().text());
+    sessionId = init.headers.get('mcp-session-id');
+    assert.ok(sessionId);
+    await init.text();
+
+    const initialized = await post({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    assert.equal(initialized.status, 202, await initialized.clone().text());
+
+    const list = await post({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+    assert.equal(list.status, 200, await list.clone().text());
+    const listed = messages(await list.text()).find(m => m.id === 2);
+    assert.equal(listed.result.tools.length, 17, JSON.stringify(listed));
+
+    const call = await post({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'count_leads', arguments: { job_titles: ['CEO'] }, _meta: { progressToken: 'p-1' } },
+    });
+    assert.equal(call.status, 200, await call.clone().text());
+    const called = messages(await call.text()).find(m => m.id === 3);
+    assert.equal(called.result.isError, undefined, JSON.stringify(called));
+    assert.match(called.result.content[0].text, /42/);
+    const apiCall = seen.find(s => /search\/database\/leads\/count/.test(s.url))!;
+    assert.equal(apiCall.authorization, `Token ${key}`);
+
+    const closed = await fetch(`${base}/mcp`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${key}`, 'mcp-session-id': sessionId! },
+    });
+    assert.equal(closed.status, 200, await closed.clone().text());
+  });
+}
