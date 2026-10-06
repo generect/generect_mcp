@@ -13,7 +13,7 @@ served 0.1.2. Outside reviewers were judging a year-old build.
 | `https://mcp.generect.com/mcp` | Remote MCP (Claude, ChatGPT, Agent Builder, Cursor) | `deploy-prod.yml` after a green `ci` on `main` (SSH forced command → `deploy/remote-deploy.sh`; gated on repo variable `MCP_DEPLOY_ENABLED`) |
 | npm `generect-ultimate-mcp` | `npx generect-ultimate-mcp@latest` — the local install in our docs | `publish-npm.yml` on every version bump merged to `main` (needs `NPM_TOKEN`) |
 | GitHub Release `v<version>` | Changelog; what directories and humans read as "latest" | `publish-npm.yml` tags and releases the same bump |
-| MCP Registry `com.generect/generect-mcp` | Clients that resolve servers by registry id | `publish-mcp.yml` on `server.json` change (needs `MCP_REGISTRY_PRIVATE_KEY`) |
+| MCP Registry `com.generect/generect-mcp` | Clients that resolve servers by registry id; lists the remote and the npm package | `publish-mcp.yml` after `publish-npm.yml` succeeds (needs `MCP_REGISTRY_PRIVATE_KEY`); the registry checks `mcpName` in the published npm version |
 | Directories (Glama, PulseMCP, mcp.so, …) | Discovery | Mirror npm / the registry on their own schedule — fix those, not each directory. Glama showed v0.1.0 (= npm) on 2026-09-23 |
 | `docs.generect.com` | Setup instructions, tool list, prices | `generect/generect-docs` |
 
@@ -23,8 +23,8 @@ served 0.1.2. Outside reviewers were judging a year-old build.
 2. `npm test && npm run build`.
 3. Free live check: `npm run health -- <key>` — it fails if a "free" endpoint charges.
 4. Merge to `main`. That is the release — everything below happens by itself:
-   - `publish-mcp.yml` fires on the `server.json` change;
    - `publish-npm.yml` tags `v<version>`, creates the GitHub Release and publishes to npm;
+   - `publish-mcp.yml` then publishes `server.json` to the registry (it lists the npm package, so it waits for npm);
    - `deploy-prod.yml` deploys the remote server once `ci` is green.
 5. `surfaces.yml` then checks every surface (`scripts/check-surfaces.mjs`) after each of
    those runs and once a day. While anything lags it keeps **one** issue open —

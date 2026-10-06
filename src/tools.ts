@@ -759,7 +759,14 @@ function compactLead(lead: any) {
     company_name: lead.company_name ?? lead.raw_company_name ?? null,
     company_domain: lead.company_domain ?? domainOf(lead.company_website) ?? null,
     industry: lead.company_industry ?? lead.industry ?? null,
-    location: lead.location ?? lead.job_location ?? lead.location_name ?? null,
+    // Thin rows carry location_name, which prod leaves empty on every row
+    // sampled (06.10: 0/10) while location_country is always set — so fall back
+    // to "city, country" rather than drop the only location the row has.
+    location:
+      lead.location ??
+      lead.job_location ??
+      lead.location_name ??
+      ([lead.location_city, lead.location_country].filter(Boolean).join(', ') || null),
     linkedin_url: lead.linkedin_url ?? null,
   };
 }

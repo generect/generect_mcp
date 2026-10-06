@@ -106,8 +106,11 @@ jobs:
         run: |
           VERSION=$(node -p "require('./package.json').version")
           NAME=$(node -p "require('./package.json').name")
-          for i in 1 2 3 4 5; do
-            LATEST=$(npm view "$NAME" dist-tags.latest 2>/dev/null || echo none)
+          # `npm view` reads the CDN-cached packument, which lagged a real publish by
+          # more than 50s on 2026-10-06. Ask the registry with a cache-busting query.
+          for i in $(seq 1 18); do
+            LATEST=$(curl -fsS -H 'Cache-Control: no-cache' "https://registry.npmjs.org/$NAME?t=$(date +%s%N)" \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)["dist-tags"].latest))' || echo none)
             [ "$LATEST" = "$VERSION" ] && echo "npm latest = $VERSION" && exit 0
             sleep 10
           done

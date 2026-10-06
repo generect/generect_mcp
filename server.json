@@ -1,8 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.generect/generect-mcp",
-  "description": "B2B lead and company data for AI agents: free audience sizing, search, enrich, emails, phones.",
-  "version": "0.10.0",
+  "title": "Generect",
+  "description": "B2B lead and company data for AI agents: free search, pay only for emails, phones, profiles.",
+  "version": "0.10.1",
+  "websiteUrl": "https://generect.com",
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/generect/generect_mcp/main/assets/icon.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "512x512"
+      ]
+    }
+  ],
   "repository": {
     "url": "https://github.com/generect/generect_mcp.git",
     "source": "github"
@@ -14,6 +25,32 @@
       "authorization": {
         "type": "oauth"
       }
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "generect-ultimate-mcp",
+      "version": "0.10.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "GENERECT_API_KEY",
+          "description": "Your Generect API key from app.generect.com/settings/api (a test_ key returns fictional data for free).",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "GENERECT_API_BASE",
+          "description": "API base URL.",
+          "isRequired": false,
+          "format": "string",
+          "default": "https://api.generect.com"
+        }
+      ]
     }
   ]
 }
