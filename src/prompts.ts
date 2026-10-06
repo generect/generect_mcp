@@ -15,8 +15,11 @@ function userText(text: string) {
 }
 
 export function registerPrompts(server: McpServer): void {
-  const register = (server as any).registerPrompt?.bind(server);
-  if (!register) return; // older SDK or a test double without prompt support
+  const registerPrompt = (server as any).registerPrompt?.bind(server);
+  if (!registerPrompt) return; // a test double without prompt support
+  // SDK v2 takes Standard Schema objects and deprecates raw shapes: wrap once here.
+  const register = (name: string, config: any, cb: any) =>
+    registerPrompt(name, { ...config, argsSchema: z.object(config.argsSchema ?? {}) }, cb);
 
   register(
     'size_an_audience',

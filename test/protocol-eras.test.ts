@@ -24,7 +24,9 @@ function setup() {
     seen.push({ url: String(url), authorization: headers.get('authorization') });
     const body = /tiers\/my-tier/.test(String(url))
       ? { current_tier: { name: '3', service_prices: { api_cached: 0.01, api_realtime: 0.04 } } }
-      : { data: { results_count: 321 }, meta: { amount_charged: 0 } };
+      : /search\/realtime\/leads\//.test(String(url))
+        ? { data: { leads: [], results_count: 0 }, meta: { amount_charged: 0 } }
+        : { data: { results_count: 321 }, meta: { amount_charged: 0 } };
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
   const handler = createMcpHandler(() => createMcpServer(api, 'https://api.test', ''));
@@ -88,3 +90,39 @@ test('protocol 2026-07-28: the negotiated revision is the new one, with the list
     await handler.close();
   }
 });
+
+for (const [era, mode] of [
+  ['2026-07-28', { pin: '2026-07-28' }],
+  ['2025-11-25', 'legacy'],
+] as const) {
+  test(`protocol ${era}: progress heartbeats reach the client through the real transport`, async () => {
+    const { handler } = setup();
+    const client = await connect(handler, mode as any, 'k');
+    try {
+      const events: any[] = [];
+      await client.callTool(
+        { name: 'search_leads', arguments: { job_titles: ['CEO'], mode: 'realtime', limit: 1 } },
+        { onprogress: (p: any) => events.push(p) },
+      );
+      assert.ok(events.length >= 1, 'expected at least the "started" heartbeat');
+      assert.match(String(events[0].message), /search_leads: started/);
+    } finally {
+      await client.close();
+      await handler.close();
+    }
+  });
+
+  test(`protocol ${era}: prompts list and render with their arguments`, async () => {
+    const { handler } = setup();
+    const client = await connect(handler, mode as any, 'k');
+    try {
+      const names = (await client.listPrompts()).prompts.map(p => p.name).sort();
+      assert.deepEqual(names, ['build_prospect_list', 'enrich_my_list', 'size_an_audience', 'spend_report']);
+      const got: any = await client.getPrompt({ name: 'size_an_audience', arguments: { icp: 'CTOs in Berlin' } });
+      assert.match(got.messages[0].content.text, /CTOs in Berlin/);
+    } finally {
+      await client.close();
+      await handler.close();
+    }
+  });
+}
