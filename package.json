@@ -1,6 +1,6 @@
 {
   "name": "generect-ultimate-mcp",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "mcpName": "com.generect/generect-mcp",
   "type": "module",
   "description": "Generect MCP server: B2B lead and company data for AI agents. Free search and audience sizing; pay only for the emails, phones and full profiles you keep.",
@@ -29,7 +29,7 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "dev:http": "tsx src/http.ts",
-    "build": "tsc",
+    "build": "npm run build:ui && tsc",
     "start": "node dist/server.js",
     "start:http": "node dist/http.js",
     "mcp:client": "tsx scripts/mcp-client.ts",
@@ -37,7 +37,11 @@
     "probe": "tsx scripts/probe.ts",
     "test": "node --import tsx --test test/*.test.ts",
     "check-version": "node scripts/check-version.mjs",
-    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\" \"scripts/**/*.ts\" \"ui/**/*.ts\"",
+    "build:ui": "node scripts/build-ui.mjs",
+    "typecheck:ui": "tsc -p ui",
+    "pretest": "npm run build:ui",
+    "preview:ui": "node ui/preview/run.mjs"
   },
   "bin": {
     "generect-mcp": "dist/cli.js"
@@ -46,6 +50,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^2.0.3",
     "@modelcontextprotocol/node": "^2.1.1",
     "@modelcontextprotocol/server": "^2.3.1",
     "cors": "^2.8.5",
@@ -61,6 +66,8 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.23",
     "@types/node": "^22.19.17",
+    "esbuild": "^0.25.12",
+    "playwright-core": "^1.63.0",
     "prettier": "^3.8.3",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3"

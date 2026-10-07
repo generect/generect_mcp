@@ -24,6 +24,7 @@ Give Claude, ChatGPT, Cursor or your own agent access to the Generect B2B databa
 - **Pay for what you keep.** Emails are billed only when a valid one is found, phones only when found, full profiles per record found.
 - **No surprise bills.** Every tool says up front whether it costs money, every response carries a `cost` block with the amount actually charged, and calls above a spend ceiling need an explicit confirmation.
 - **Safe to try.** A test key returns realistic fictional data at real speed and charges nothing.
+- **Interactive in the chat.** In Claude, ChatGPT and other hosts that support MCP Apps, results come back as cards you can act on: an audience card with prices, a lead table where you pick people and find their emails, company and profile cards, your balance.
 
 ## Connect
 
@@ -89,6 +90,21 @@ Requires Node 20 or newer. Optional: `GENERECT_API_BASE` (default `https://api.g
 ### Test mode
 
 Use a `test_…` key from [app.generect.com/settings/api](https://app.generect.com/settings/api) in any of the configs above. Every tool then answers with fictional data, shows what the real call would have cost and charges nothing. Results carry `test_mode: true` so an agent cannot mistake them for real people. See [Test mode](https://docs.generect.com/api-reference/test-mode).
+
+## Interactive results (MCP Apps)
+
+Hosts that support the [MCP Apps](https://modelcontextprotocol.io/extensions/apps/overview) extension (Claude on web, desktop and mobile, ChatGPT, VS Code, Goose and others) render these tools as interactive views inside the conversation. Other clients get the same text and structured results as before.
+
+| Tool | What you see |
+|------|--------------|
+| `count_leads`, `count_companies` | The audience size, your filters, what the next step costs at your prices, and a button to see the first 25 |
+| `search_leads`, `preview_leads` | The top people inline; open all of them as a table, filter, select, and find work emails right there. You confirm the maximum before anything is spent, a miss is free, and found emails go back to Claude so it can use them |
+| `search_companies` | Company cards and a table, with a one-click ask for decision makers at them |
+| `enrich_lead`, `get_lead_by_url`, `enrich_company` | A profile card with the experience timeline and a find-email button |
+| `get_balance` | Balance, this month's spend and your per-operation prices |
+| `generate_email` | Which emails were found and what it cost |
+
+The views follow the host's theme (light and dark), fonts and layout, and work on phones. Results from a test key are labelled as fictional.
 
 ## Tools
 

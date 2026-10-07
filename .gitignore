@@ -20,3 +20,4 @@ Thumbs.db
 # Persisted OAuth client registry (metadata only, no secrets)
 .oauth-clients.json
 .oauth-clients.json.tmp
+ui/preview/shots/

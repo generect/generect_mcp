@@ -64,6 +64,14 @@ for (const [era, mode, sessionful] of [
       );
       const vocab: any = await client.readResource({ uri: 'generect://vocabulary/industries' });
       assert.match(vocab.contents[0].text, /Software Development/);
+
+      // MCP Apps over the real transport: the view link survives tools/list and the
+      // page is readable, on both protocol paths.
+      const searchTool = (await client.listTools()).tools.find(t => t.name === 'search_leads')!;
+      assert.equal((searchTool._meta as any)?.ui?.resourceUri, 'ui://generect/app.html');
+      const page: any = await client.readResource({ uri: 'ui://generect/app.html' });
+      assert.equal(page.contents[0].mimeType, 'text/html;profile=mcp-app');
+      assert.match(page.contents[0].text, /<meta name="color-scheme"/);
     } finally {
       await client.close();
     }

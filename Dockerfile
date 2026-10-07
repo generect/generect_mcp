@@ -13,6 +13,9 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
+# The MCP Apps view (dist/ui/app.html) is built from ui/ by scripts/build-ui.mjs.
+COPY ui ./ui
+COPY scripts/build-ui.mjs ./scripts/build-ui.mjs
 RUN npm run build
 
 FROM node:20-alpine AS runner
