@@ -151,6 +151,20 @@ const SCENARIOS = {
     result: sc({ returned: 8, results_count: 1284, mode: 'database', leads: LEADS, cost: { amount_charged_usd: 0 } }),
     flow: 'no-price',
   },
+  'leads-list-price': {
+    width: 1100,
+    height: 720,
+    listPricesOnly: true,
+    toolName: 'search_leads',
+    args: ARGS,
+    result: sc({ returned: 8, results_count: 1284, mode: 'database', leads: LEADS, cost: { amount_charged_usd: 0 } }),
+    flow: 'no-price',
+  },
+  'preview-count': {
+    toolName: 'preview_leads',
+    args: { ...ARGS, count_only: true },
+    result: sc({ results_count: 12345, mode: 'preview', cost: { amount_charged_usd: 0 } }),
+  },
   companies: {
     toolName: 'search_companies',
     args: { industries: ['Software Development'], locations: ['Berlin'] },
@@ -267,7 +281,11 @@ for (const [name, s] of Object.entries(SCENARIOS)) {
   await page.exposeFunction('__callToolNode', async (tool, args) => {
     if (tool === 'get_balance') {
       if (s.balanceFails) throw new Error('get_balance unavailable');
-      return sc({ your_prices_usd: { email_find: 0.02 }, cost: { amount_charged_usd: 0 } });
+      return sc({
+        your_prices_usd: { email_find: 0.02 },
+        prices_source: s.listPricesOnly ? 'published list prices (could not read the account tier)' : 'account tier 2',
+        cost: { amount_charged_usd: 0 },
+      });
     }
     if (tool === 'generate_email') {
       const cands = args.candidates ?? [args];

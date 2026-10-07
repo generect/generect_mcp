@@ -77,6 +77,9 @@ test('viewFor: the tool decides, the payload shape is the fallback', () => {
   assert.equal(viewFor(undefined, { results_count: 4 }), 'audience');
   assert.equal(viewFor(undefined, { requested: 2, results: [] }), 'emails');
   assert.equal(viewFor('health', { ok: true }), 'unknown');
+  // preview_leads with count_only returns a count: the audience card, not "no leads".
+  assert.equal(viewFor('preview_leads', { results_count: 12345, mode: 'preview' }), 'audience');
+  assert.equal(viewFor('preview_leads', { leads: [], results_count: 0 }), 'leads');
 });
 
 test('cost badge says Free only for a real $0 and flags test data first', () => {
@@ -246,6 +249,15 @@ test('links to LinkedIn or a website are offered only as http(s)', () => {
   const co = (website: string) => profileView('enrich_company', { found: true, company: { name: 'Co', website } }, {});
   assert.match(co('klarwerk.io'), /data-url="https:\/\/klarwerk\.io"/);
   assert.ok(!co('javascript:alert(1)').includes('data-url'));
+});
+
+test('balance names list prices as such when the account tier could not be read', () => {
+  const p = { your_prices_usd: { email_find: 0.02 } };
+  assert.match(balanceView({ balance_usd: 5, ...p, prices_source: 'account tier 2 — quote these' }), /Your prices/);
+  assert.match(
+    balanceView({ balance_usd: 5, ...p, prices_source: 'published list prices (could not read the account tier)' }),
+    /List prices/,
+  );
 });
 
 test('helpers', () => {

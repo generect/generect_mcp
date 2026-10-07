@@ -24,6 +24,10 @@ test('tools with a view point at the one Generect view; the rest carry no UI met
     const ui = (t._meta as any)?.ui;
     if (UI_TOOLS.has(t.name)) {
       assert.equal(ui?.resourceUri, UI_RESOURCE_URI, t.name);
+      // registerAppTool must keep the rest of the tool's metadata intact.
+      assert.ok(t.title, `${t.name} lost its title`);
+      assert.equal(typeof t.annotations?.readOnlyHint, 'boolean', `${t.name} lost its annotations`);
+      assert.equal((t.outputSchema as any)?.type, 'object', `${t.name} lost its outputSchema`);
       // The SDK also writes the legacy flat key older hosts read.
       assert.equal((t._meta as any)?.['ui/resourceUri'], UI_RESOURCE_URI, t.name);
     } else {

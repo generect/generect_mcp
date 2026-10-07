@@ -19,6 +19,8 @@ export const VIEW_BY_TOOL: Record<string, ViewKind> = {
 
 /** Which view a result gets: the tool's own, else whatever its payload looks like. */
 export function viewFor(toolName: string | undefined, data: any): ViewKind {
+  // preview_leads with count_only answers a count, not rows.
+  if (toolName === 'preview_leads' && data && !Array.isArray(data.leads) && 'results_count' in data) return 'audience';
   if (toolName && VIEW_BY_TOOL[toolName]) return VIEW_BY_TOOL[toolName];
   if (!data || typeof data !== 'object') return 'unknown';
   if (Array.isArray(data.leads)) return 'leads';
@@ -557,7 +559,15 @@ export function balanceView(data: any, fmt: Fmt = {}): string {
     usd(data.balance_usd, fmt),
   )}</div><div class="hero-label">${
     data.used_this_month_usd != null ? `${esc(usd(data.used_this_month_usd, fmt))} used this month` : 'available'
-  }</div>${prices ? `<div class="section-title">Your prices</div><div class="facts">${prices}</div>` : ''}${testNote(
+  }</div>${
+    prices
+      ? `<div class="section-title">${
+          /^account tier/.test(String(data.prices_source ?? '')) || data.prices_source == null
+            ? 'Your prices'
+            : 'List prices (your account tier could not be read)'
+        }</div><div class="facts">${prices}</div>`
+      : ''
+  }${testNote(
     data,
   )}<div class="actions"><button data-action="open-link" data-url="https://app.generect.com/">Open Generect</button></div>`;
 }
