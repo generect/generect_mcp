@@ -10,7 +10,11 @@ import { z } from 'zod';
 // `annotations` are hints the host uses to decide what to auto-approve. Getting
 // them wrong is a trust bug, so:
 //   readOnlyHint   - true only when the call cannot change state on Generect's
-//                    side. Everything here reads data; webhook management does not.
+//                    side, and spending the user's balance IS a change: hosts run
+//                    read-only tools without asking (Claude auto-approves them), so
+//                    every tool that can charge is false and the host asks first.
+//                    The one exception is count_*: free by default; a realtime count
+//                    ($0.02) only runs on an explicit mode:"realtime".
 //   destructiveHint- reserved for calls that can remove something.
 //   idempotentHint - claimed ONLY for free calls. A repeated billable call has a
 //                    very real additional effect: it charges again.
@@ -95,7 +99,8 @@ const RECORD_OUTPUT: z.ZodRawShape = {
   company: z.any().optional(),
 };
 
-const READ_ONLY = { readOnlyHint: true, openWorldHint: true } as const;
+/** Reads data but can charge the balance: not read-only, and not destructive either. */
+const PAID = { readOnlyHint: false, destructiveHint: false, openWorldHint: true } as const;
 const FREE_READ_ONLY = { readOnlyHint: true, idempotentHint: true, openWorldHint: true } as const;
 
 export const TOOL_META: Record<string, ToolMeta> = {
@@ -167,32 +172,36 @@ export const TOOL_META: Record<string, ToolMeta> = {
   },
 
   // ---- billable ----
-  search_leads: { title: 'Search leads (billed per row)', annotations: READ_ONLY, outputSchema: SEARCH_OUTPUT },
+  search_leads: {
+    title: 'Search leads (free thin rows, full rows billed)',
+    annotations: PAID,
+    outputSchema: SEARCH_OUTPUT,
+  },
   search_companies: {
-    title: 'Search companies (billed per row)',
-    annotations: READ_ONLY,
+    title: 'Search companies (free thin rows, full rows billed)',
+    annotations: PAID,
     outputSchema: SEARCH_OUTPUT,
   },
   preview_leads: {
     title: 'Preview leads (cheapest paid look)',
-    annotations: READ_ONLY,
+    annotations: PAID,
     outputSchema: SEARCH_OUTPUT,
   },
-  enrich_lead: { title: 'Enrich one lead', annotations: READ_ONLY, outputSchema: RECORD_OUTPUT },
-  enrich_company: { title: 'Enrich one company', annotations: READ_ONLY, outputSchema: RECORD_OUTPUT },
+  enrich_lead: { title: 'Enrich one lead', annotations: PAID, outputSchema: RECORD_OUTPUT },
+  enrich_company: { title: 'Enrich one company', annotations: PAID, outputSchema: RECORD_OUTPUT },
   get_lead_by_url: {
     title: 'Enrich a lead by LinkedIn URL (alias)',
-    annotations: READ_ONLY,
+    annotations: PAID,
     outputSchema: RECORD_OUTPUT,
   },
   resolve_profile: {
     title: 'Resolve an anonymous LinkedIn link',
-    annotations: READ_ONLY,
+    annotations: PAID,
     outputSchema: { ...COMMON, resolved: z.any().optional(), profiles: z.array(z.any()).optional() },
   },
   generate_email: {
     title: 'Find a verified work email',
-    annotations: READ_ONLY,
+    annotations: PAID,
     outputSchema: {
       ...COMMON,
       requested: z.number().optional(),
@@ -206,17 +215,17 @@ export const TOOL_META: Record<string, ToolMeta> = {
   },
   validate_email: {
     title: 'Validate email deliverability',
-    annotations: READ_ONLY,
+    annotations: PAID,
     outputSchema: { ...COMMON, submitted: z.number().optional(), results: z.any().optional() },
   },
   find_phone: {
     title: 'Find a phone number (most expensive)',
-    annotations: READ_ONLY,
+    annotations: PAID,
     outputSchema: { ...COMMON, result: z.any().optional() },
   },
   start_bulk_job: {
     title: 'Submit a bulk job',
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    annotations: PAID,
     outputSchema: {
       ...COMMON,
       job_type: z.string().optional(),

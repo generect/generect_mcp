@@ -3,7 +3,7 @@
   "name": "com.generect/generect-mcp",
   "title": "Generect",
   "description": "B2B lead and company data for AI agents: free search, pay only for emails, phones, profiles.",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "websiteUrl": "https://generect.com",
   "icons": [
     {
@@ -31,7 +31,7 @@
     {
       "registryType": "npm",
       "identifier": "generect-ultimate-mcp",
-      "version": "0.12.0",
+      "version": "0.12.1",
       "transport": {
         "type": "stdio"
       },
