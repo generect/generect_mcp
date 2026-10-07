@@ -223,7 +223,8 @@ export interface LeadsUi {
   filter: string;
   emails: EmailState;
   status?: string;
-  confirming?: { count: number; maxUsd: number } | null;
+  /** maxUsd null: the account's price could not be read, so no figure is promised. */
+  confirming?: { count: number; maxUsd: number | null } | null;
   busy?: boolean;
 }
 
@@ -311,16 +312,20 @@ function leadsTable(leads: LeadRow[], data: any, sub: string, ui: LeadsUi, fmt: 
   ).length;
   const confirm = ui.confirming;
   const barButtons = confirm
-    ? `<button data-action="cancel-emails">Cancel</button><button class="primary" data-action="confirm-emails">Confirm · up to ${esc(
-        usd(confirm.maxUsd, fmt),
-      )}</button>`
+    ? `<button data-action="cancel-emails">Cancel</button><button class="primary" data-action="confirm-emails">${
+        confirm.maxUsd == null
+          ? `Confirm · ${esc(num(confirm.count, fmt))} people`
+          : `Confirm · up to ${esc(usd(confirm.maxUsd, fmt))}`
+      }</button>`
     : `<button data-action="download" ${leads.length ? '' : 'disabled'}>Download CSV</button><button class="primary" data-action="find-emails" ${
         todo === 0 || ui.busy ? 'disabled' : ''
       }>Find emails${todo ? ` for ${num(todo, fmt)}` : ''}</button>`;
   const status =
     ui.status ??
     (confirm
-      ? `You pay only for valid emails found, at most ${usd(confirm.maxUsd, fmt)} for ${num(confirm.count, fmt)} people.`
+      ? confirm.maxUsd == null
+        ? `Could not read your email price. You pay your plan's rate per valid email found, for up to ${num(confirm.count, fmt)} people; a miss is free.`
+        : `You pay only for valid emails found, at most ${usd(confirm.maxUsd, fmt)} for ${num(confirm.count, fmt)} people.`
       : n
         ? `${num(n, fmt)} selected`
         : 'Select people to find their work emails');
@@ -435,7 +440,7 @@ function yearOf(d: unknown): string {
 export function profileView(
   toolName: string | undefined,
   data: any,
-  ui: { emailState?: EmailState[string]; confirmUsd?: number | null },
+  ui: { emailState?: EmailState[string]; confirm?: { usd: number | null } | null },
   fmt: Fmt = {},
 ): string {
   const issue = problem(data);
@@ -480,15 +485,18 @@ export function profileView(
   const linkedin = typeof rawLinkedin === 'string' && /^https?:\/\//i.test(rawLinkedin) ? rawLinkedin : null;
   const linkBtn = linkedin ? `<button data-action="open-link" data-url="${esc(linkedin)}">LinkedIn</button>` : '';
   // A paid action: the first click shows the price, only the second one spends.
-  const confirm = ui.confirmUsd;
-  const actions =
-    confirm != null
-      ? `<div class="note">You pay ${esc(usd(confirm, fmt))} only if a valid work email is found. A miss is free.</div><div class="actions"><button class="primary" data-action="profile-confirm">Confirm · up to ${esc(
-          usd(confirm, fmt),
-        )}</button><button data-action="profile-cancel">Cancel</button></div>`
-      : `<div class="actions"><button class="primary" data-action="profile-email" ${
-          email?.status === 'busy' || email?.status === 'found' ? 'disabled' : ''
-        }>${email?.status === 'busy' ? 'Looking…' : 'Find work email'}</button>${linkBtn}</div>`;
+  const confirm = ui.confirm;
+  const actions = confirm
+    ? `<div class="note">${
+        confirm.usd == null
+          ? "Could not read your email price. You pay your plan's rate only if a valid work email is found. A miss is free."
+          : `You pay ${esc(usd(confirm.usd, fmt))} only if a valid work email is found. A miss is free.`
+      }</div><div class="actions"><button class="primary" data-action="profile-confirm">${
+        confirm.usd == null ? 'Confirm' : `Confirm · up to ${esc(usd(confirm.usd, fmt))}`
+      }</button><button data-action="profile-cancel">Cancel</button></div>`
+    : `<div class="actions"><button class="primary" data-action="profile-email" ${
+        email?.status === 'busy' || email?.status === 'found' ? 'disabled' : ''
+      }>${email?.status === 'busy' ? 'Looking…' : 'Find work email'}</button>${linkBtn}</div>`;
   return `${header('Profile', '', costBadge(data, fmt))}<div class="profile-head"><div class="avatar">${esc(initials(name))}</div><div class="who"><div class="name">${esc(
     name || 'Unnamed',
   )}</div><div class="meta">${esc([title, company].filter(Boolean).join(' · '))}</div>${

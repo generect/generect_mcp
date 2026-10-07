@@ -185,6 +185,13 @@ test('leads table: filter, selection and the confirm step show the ceiling befor
   assert.match(confirm, /Confirm · up to \$0\.040/);
   assert.match(confirm, /at most \$0\.040 for 2 people/);
   assert.ok(!confirm.includes('data-action="find-emails"'));
+  const noPrice = leadsView(
+    {},
+    { leads },
+    ui({ fullscreen: true, selected: new Set(['a', 'b']), confirming: { count: 2, maxUsd: null } }),
+  );
+  assert.match(noPrice, /Confirm · 2 people/);
+  assert.match(noPrice, /Could not read your email price/);
 });
 
 test('CSV: quoted per RFC 4180, formula prefixes defused, found emails included', () => {
@@ -220,10 +227,15 @@ test('profile: experience timeline, the email state, and a LinkedIn link only wh
   assert.match(profileView('enrich_lead', { found: false }, {}), /not charged/);
   // The paid button never spends on the first click: it asks first.
   assert.match(html, /data-action="profile-email"/);
-  const asking = profileView('enrich_lead', data, { confirmUsd: 0.02 });
+  const asking = profileView('enrich_lead', data, { confirm: { usd: 0.02 } });
   assert.match(asking, /data-action="profile-confirm"/);
   assert.match(asking, /Confirm · up to \$0\.020/);
   assert.ok(!asking.includes('data-action="profile-email"'));
+  // Unknown price: still a confirm step, and no dollar figure is promised.
+  const unknown = profileView('enrich_lead', data, { confirm: { usd: null } });
+  assert.match(unknown, /data-action="profile-confirm"/);
+  assert.match(unknown, /Could not read your email price/);
+  assert.ok(!/up to \$/.test(unknown));
 });
 
 test('links to LinkedIn or a website are offered only as http(s)', () => {

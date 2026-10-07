@@ -33,7 +33,6 @@ import {
 declare const __APP_VERSION__: string;
 
 const EMAIL_BATCH = 10; // generate_email resolves up to 10 candidates in one synchronous call
-const FALLBACK_EMAIL_PRICE = 0.02; // published list price, used only if get_balance cannot answer
 
 const root = document.getElementById('app')!;
 
@@ -54,8 +53,8 @@ const state = {
     busy: false,
   } as LeadsUi,
   profileEmail: undefined as EmailState[string] | undefined,
-  /** Set while the profile card shows its price and waits for a second click. */
-  profileConfirmUsd: null as number | null,
+  /** Set while the profile card shows its price (null: unknown) and waits for a second click. */
+  profileConfirm: null as { usd: number | null } | null,
 };
 
 const app = new App(
@@ -114,7 +113,7 @@ function render() {
         html = profileView(
           state.toolName,
           state.data,
-          { emailState: state.profileEmail, confirmUsd: state.profileConfirmUsd },
+          { emailState: state.profileEmail, confirm: state.profileConfirm },
           f,
         );
         break;
@@ -171,13 +170,15 @@ function candidateFor(l: any): Record<string, string> | null {
   return null;
 }
 
-async function emailPrice(): Promise<number> {
+/** The account's own price per valid email, or null when get_balance cannot say.
+ * Never a guess: a list-price fallback could understate a pricier contract. */
+async function emailPrice(): Promise<number | null> {
   try {
     const r = structured(await app.callServerTool({ name: 'get_balance', arguments: {} }));
     const p = Number(r?.your_prices_usd?.email_find);
-    return Number.isFinite(p) && p >= 0 ? p : FALLBACK_EMAIL_PRICE;
+    return Number.isFinite(p) && p >= 0 ? p : null;
   } catch {
-    return FALLBACK_EMAIL_PRICE;
+    return null;
   }
 }
 
@@ -207,7 +208,7 @@ async function askForEmails() {
   render();
   const price = await emailPrice();
   ui.status = undefined;
-  ui.confirming = { count: eligible.length, maxUsd: round(price * eligible.length) };
+  ui.confirming = { count: eligible.length, maxUsd: price == null ? null : round(price * eligible.length) };
   render();
 }
 
@@ -316,13 +317,13 @@ async function askProfileEmail() {
   render();
   const price = await emailPrice();
   state.profileEmail = undefined;
-  state.profileConfirmUsd = round(price);
+  state.profileConfirm = { usd: price == null ? null : round(price) };
   render();
 }
 
 async function profileEmail() {
   const l = state.data?.lead ?? {};
-  state.profileConfirmUsd = null;
+  state.profileConfirm = null;
   const cand = profileCandidate();
   if (!cand) {
     state.profileEmail = { status: 'error', note: 'No identifier to look this person up by.' };
@@ -432,7 +433,7 @@ root.addEventListener('click', async ev => {
       await profileEmail();
       break;
     case 'profile-cancel':
-      state.profileConfirmUsd = null;
+      state.profileConfirm = null;
       render();
       break;
     case 'open-link': {

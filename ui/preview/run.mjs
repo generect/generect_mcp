@@ -141,6 +141,16 @@ const SCENARIOS = {
     }),
     flow: 'emails-by-url',
   },
+  // get_balance fails: the confirm step stays, with no dollar figure promised.
+  'leads-no-price': {
+    width: 1100,
+    height: 720,
+    balanceFails: true,
+    toolName: 'search_leads',
+    args: ARGS,
+    result: sc({ returned: 8, results_count: 1284, mode: 'database', leads: LEADS, cost: { amount_charged_usd: 0 } }),
+    flow: 'no-price',
+  },
   companies: {
     toolName: 'search_companies',
     args: { industries: ['Software Development'], locations: ['Berlin'] },
@@ -255,7 +265,10 @@ for (const [name, s] of Object.entries(SCENARIOS)) {
       errors.push('console(' + (m.location()?.url || '').slice(0, 40) + '): ' + m.text().slice(0, 400)),
   );
   await page.exposeFunction('__callToolNode', async (tool, args) => {
-    if (tool === 'get_balance') return sc({ your_prices_usd: { email_find: 0.02 }, cost: { amount_charged_usd: 0 } });
+    if (tool === 'get_balance') {
+      if (s.balanceFails) throw new Error('get_balance unavailable');
+      return sc({ your_prices_usd: { email_find: 0.02 }, cost: { amount_charged_usd: 0 } });
+    }
     if (tool === 'generate_email') {
       const cands = args.candidates ?? [args];
       const results = cands.map((c, i) => {
@@ -317,6 +330,18 @@ for (const [name, s] of Object.entries(SCENARIOS)) {
     const keys = (gen?.candidates ?? []).map(c => Object.keys(c).join());
     if (keys.length !== 3 || keys.some(k => k !== 'linkedin_url'))
       errors.push(`realtime rows looked up by ${JSON.stringify(gen)}`);
+  }
+  if (s.flow === 'no-price') {
+    await frame.getByRole('button', { name: /Open all/ }).click();
+    await page.waitForTimeout(200);
+    await frame.locator('input[data-action="toggle-all"]').check();
+    await frame.getByRole('button', { name: /Find emails for/ }).click();
+    await page.waitForTimeout(300);
+    const label = await frame.locator('[data-action="confirm-emails"]').innerText();
+    const status = await frame.locator('.bar .status').innerText();
+    if (!/Confirm · 8 people/.test(label) || /\$/.test(label) || !/Could not read your email price/.test(status))
+      errors.push(`no-price confirm wrong: "${label}" / "${status}"`);
+    await page.locator('.card').screenshot({ path: join(SHOTS, `${name}-confirm.png`) });
   }
   if (s.flow === 'profile-email') {
     await frame.getByRole('button', { name: /Find work email/ }).click();
