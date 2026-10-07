@@ -29,6 +29,16 @@ auth, no cookies, so this grants nothing). List results carry a shared cache hin
 The 2025 path keeps protocol sessions in memory, and OAuth codes live in memory as well,
 so the hosted server still runs as a single instance.
 
+## MCP Apps view
+
+`ui/` holds the interactive view hosts render for tools listed in `UI_TOOLS` (`src/ui.ts`). Those tools carry `_meta.ui.resourceUri: "ui://generect/app.html"`; the resource is one self-contained HTML page that picks its view from the tool name (`ui/main.ts`) and renders the tool's own `structuredContent` with pure functions (`ui/views.ts`, unit-tested in `test/ui-views.test.ts`).
+
+- **Build.** `npm run build` runs `npm run build:ui` first, which bundles `ui/main.ts` with esbuild and inlines script and styles into `dist/ui/app.html`. The page ships in the npm package and the Docker image; `npm test` rebuilds it (`pretest`). A missing build is a loud error on `resources/read`, never a blank card.
+- **Sandbox.** The resource declares `csp.resourceDomains: ["https://assets.claude.ai"]` (Claude's font host, for `applyHostFonts`) and no `connectDomains`: the page never calls the network itself. Every action goes through the host: `callServerTool` for prepared actions the user confirms in the view (finding emails), `sendMessage` for anything that needs the model, `updateModelContext` to tell the model what the user did.
+- **Money.** Paid actions in the view show the maximum (`your_prices_usd.email_find` from `get_balance` × people) and need a second click. Lookups then run 10 people per `generate_email` call (its synchronous limit), so one call is at most 10 × the email price, and a miss is free. `generate_email` has no spend ceiling of its own; the view's confirm step is the guard.
+- **Look.** Structure uses the host's style variables with Claude's published values as fallbacks; the document is transparent and declares `color-scheme: light dark` (without it Chromium paints an opaque backdrop in dark mode). `prefersBorder: false`.
+- **Preview.** `npm run preview:ui` renders every view in a stand-in host built on the SDK's own `AppBridge` with Claude's light and dark tokens, drives the email flow against canned answers, fails on any page error and writes screenshots to `ui/preview/shots/`. It needs a Chromium (`CHROMIUM_PATH`, or `npx playwright install chromium`).
+
 ## Authentication
 
 ### Direct API key (no OAuth)

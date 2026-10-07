@@ -8,5 +8,7 @@ yarn-error.log*
 .env
 .env.*
 scripts
+# ...except the MCP Apps view build, which `npm run build` needs.
+!scripts/build-ui.mjs
 README.md
 LICENSE

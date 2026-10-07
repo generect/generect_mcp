@@ -1,4 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
+import { registerAppTool } from '@modelcontextprotocol/ext-apps/server';
+import { UI_RESOURCE_URI, UI_TOOLS } from './ui.js';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
@@ -141,7 +143,11 @@ function createRegistrar(server: McpServer): Registrar {
             throw err;
           }
         };
-        server.registerTool(
+        const register = UI_TOOLS.has(name)
+          ? (n: string, config: any, cb: any) =>
+              registerAppTool(server, n, { ...config, _meta: { ui: { resourceUri: UI_RESOURCE_URI } } }, cb)
+          : (n: string, config: any, cb: any) => server.registerTool(n, config, cb);
+        register(
           name,
           {
             // v2 takes Standard Schema objects; raw shapes are deprecated (and

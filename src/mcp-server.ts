@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { registerTools } from './tools.js';
+import { registerUiResource } from './ui.js';
 import { VERSION, SERVER_NAME } from './version.js';
 
 type Fetcher = typeof fetch;
@@ -17,5 +18,6 @@ export function createMcpServer(fetcher: Fetcher, apiBase: string, apiKey: strin
     { cacheHints: { 'tools/list': LIST_CACHE, 'resources/list': LIST_CACHE, 'prompts/list': LIST_CACHE } },
   );
   registerTools(server, fetcher, apiBase, apiKey);
+  registerUiResource(server);
   return server;
 }
