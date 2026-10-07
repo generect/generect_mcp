@@ -108,7 +108,12 @@ jobs:
           NAME=$(node -p "require('./package.json').name")
           # `npm view` reads the CDN-cached packument, which lagged a real publish by
           # more than 50s on 2026-10-06. Ask the registry with a cache-busting query.
-          for i in $(seq 1 18); do
+          # Since 2026-10 npm answers a publish with "Your package is being processed
+          # and may take a few minutes to become available": 0.12.1 appeared 4m09s
+          # after `npm publish` returned, past the old 3-minute window, so this job
+          # failed and the MCP Registry publish (which waits for it) was skipped.
+          # Wait up to 15 minutes.
+          for i in $(seq 1 90); do
             LATEST=$(curl -fsS -H 'Cache-Control: no-cache' "https://registry.npmjs.org/$NAME?t=$(date +%s%N)" \
               | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)["dist-tags"].latest))' || echo none)
             [ "$LATEST" = "$VERSION" ] && echo "npm latest = $VERSION" && exit 0
