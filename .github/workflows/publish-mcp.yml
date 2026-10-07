@@ -25,17 +25,30 @@ jobs:
       # publish-npm also succeeds as a no-op when the version is already on npm
       # (a dependency bump, a workflow edit, a hand-made release). The registry
       # refuses a version it already has, so skip instead of failing six times.
+      #
+      # The registry API is sometimes slow or answers 5xx (on 2026-10-07 its search
+      # endpoint took 2 minutes to return a 500), so only a definite answer counts:
+      # 200 = skip, 404 = publish, anything else is retried and then fails loudly
+      # rather than publishing blind into a version the registry may already have.
       - name: Skip a version the registry already has
         id: already
         run: |
           NAME=$(node -p "require('./server.json').name")
           VERSION=$(node -p "require('./server.json').version")
           ENC=$(node -p "encodeURIComponent('$NAME')")
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.modelcontextprotocol.io/v0.1/servers/$ENC/versions/$VERSION")
-          if [ "$CODE" = "200" ]; then
-            echo "::notice::$NAME $VERSION is already in the registry; nothing to do."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -s -o /dev/null --max-time 30 -w '%{http_code}' "https://registry.modelcontextprotocol.io/v0.1/servers/$ENC/versions/$VERSION" || true)
+            if [ "$CODE" = "200" ]; then
+              echo "::notice::$NAME $VERSION is already in the registry; nothing to do."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            [ "$CODE" = "404" ] && exit 0
+            echo "registry answered $CODE (attempt $i); retrying in 20s"
+            sleep 20
+          done
+          echo "::error::The registry gave no definite answer for $NAME $VERSION (last: $CODE)."
+          exit 1
 
       # Pinned. v1.0.0 requested an OIDC audience the registry stopped accepting
       # ("invalid audience: expected https://registry.modelcontextprotocol.io,
@@ -89,14 +102,23 @@ jobs:
           done
           exit 1
 
+      # Only after a publish in this run (a skipped version was already verified by
+      # the step above). Asks for this exact version, not the search endpoint (slow
+      # and flaky) and not "latest" (a patch to an older line is never latest), and
+      # retries while the new version propagates.
       - name: Verify the registry now serves this version
+        if: steps.already.outputs.skip != 'true'
         run: |
+          NAME=$(node -p "require('./server.json').name")
           VERSION=$(node -p "require('./server.json').version")
-          LATEST=$(curl -fsSL "https://registry.modelcontextprotocol.io/v0/servers?search=generect" \
-            | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).servers.filter(s=>s.server.name==="com.generect/generect-mcp"&&s._meta["io.modelcontextprotocol.registry/official"].isLatest).map(s=>s.server.version)[0] ?? "none"')
-          echo "server.json=$VERSION registry=$LATEST"
-          if [ "$VERSION" != "$LATEST" ]; then
-            echo "::error::Registry still serves $LATEST after publishing $VERSION."
-            exit 1
-          fi
-          echo "Published com.generect/generect-mcp $VERSION"
+          ENC=$(node -p "encodeURIComponent('$NAME')")
+          GOT=none
+          for i in $(seq 1 12); do
+            BODY=$(curl -fsS --max-time 30 "https://registry.modelcontextprotocol.io/v0.1/servers/$ENC/versions/$VERSION" || true)
+            GOT=$(printf '%s' "$BODY" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s);console.log((d.server||d).version)}catch{console.log("none")}})')
+            [ "$GOT" = "$VERSION" ] && echo "Published $NAME $VERSION" && exit 0
+            echo "registry has no $VERSION yet (got $GOT, attempt $i); retrying in 20s"
+            sleep 20
+          done
+          echo "::error::The registry does not serve $NAME $VERSION after publishing it."
+          exit 1
