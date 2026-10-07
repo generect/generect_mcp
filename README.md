@@ -22,7 +22,7 @@ Give Claude, ChatGPT, Cursor or your own agent access to the Generect B2B databa
 
 - **Free to explore.** Counting an audience is free, and so is a database search with thin rows (who, role, where, which company), up to a daily row quota per account.
 - **Pay for what you keep.** Emails are billed only when a valid one is found, phones only when found, full profiles per record found.
-- **No surprise bills.** Every tool says up front whether it costs money, every response carries a `cost` block with the amount actually charged, and calls above a spend ceiling need an explicit confirmation.
+- **No surprise bills.** Every tool says up front whether it costs money, every response carries a `cost` block with the amount actually charged, and calls above a spend ceiling need an explicit confirmation. Tools that can charge are not marked read-only, so Claude and other hosts ask before running them (choose "Always allow" for the ones you trust); counting, balance and health run without asking.
 - **Safe to try.** A test key returns realistic fictional data at real speed and charges nothing.
 - **Interactive in the chat.** In Claude, ChatGPT and other hosts that support MCP Apps, results come back as cards you can act on: an audience card with prices, a lead table where you pick people and find their emails, company and profile cards, your balance.
 

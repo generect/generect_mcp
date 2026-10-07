@@ -29,6 +29,10 @@ auth, no cookies, so this grants nothing). List results carry a shared cache hin
 The 2025 path keeps protocol sessions in memory, and OAuth codes live in memory as well,
 so the hosted server still runs as a single instance.
 
+## Tool annotations
+
+`src/tool-meta.ts` holds every tool's title and annotations in one table. Hosts auto-approve tools marked `readOnlyHint: true` (Claude runs them without asking), so a tool that can spend the balance is `readOnlyHint: false, destructiveHint: false`: it changes nothing but the balance, and the host asks first. Only `count_leads`, `count_companies`, `get_balance`, `get_bulk_job` and `health` are read-only; counts stay read-only because a paid realtime count needs an explicit `mode: "realtime"`. `manage_webhooks` is the only destructive tool. `test/tools-mapping.test.ts` pins this split.
+
 ## MCP Apps view
 
 `ui/` holds the interactive view hosts render for tools listed in `UI_TOOLS` (`src/ui.ts`). Those tools carry `_meta.ui.resourceUri: "ui://generect/app.html"`; the resource is one self-contained HTML page that picks its view from the tool name (`ui/main.ts`) and renders the tool's own `structuredContent` with pure functions (`ui/views.ts`, unit-tested in `test/ui-views.test.ts`).

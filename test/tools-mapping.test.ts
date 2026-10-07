@@ -892,10 +892,20 @@ test('every tool declares a title, annotations and an output schema', () => {
   }
 });
 
-test('only webhook management is declared as write/destructive', () => {
-  const writers = TOOL_ORDER.filter(n => TOOL_META[n].annotations.readOnlyHint === false);
-  assert.deepEqual(writers, ['manage_webhooks']);
-  assert.equal(TOOL_META.manage_webhooks.annotations.destructiveHint, true);
+test('every tool that can charge asks first; only webhook management is destructive', () => {
+  // Hosts run read-only tools without asking, so a tool that can spend the
+  // balance must not claim readOnlyHint. count_* is the documented exception
+  // (free unless mode:"realtime" is passed on purpose).
+  const free = ['count_leads', 'count_companies', 'get_balance', 'get_bulk_job', 'health'];
+  for (const n of TOOL_ORDER) {
+    const a = TOOL_META[n].annotations;
+    if (free.includes(n)) assert.equal(a.readOnlyHint, true, `${n} is free and should be read-only`);
+    else assert.equal(a.readOnlyHint, false, `${n} can charge or write, so the host must ask`);
+    // The directory needs an explicit hint either way.
+    assert.equal(typeof (a.readOnlyHint === false ? a.destructiveHint : a.readOnlyHint), 'boolean', `${n} hint`);
+  }
+  const destructive = TOOL_ORDER.filter(n => TOOL_META[n].annotations.destructiveHint === true);
+  assert.deepEqual(destructive, ['manage_webhooks']);
 });
 
 test('idempotency is only claimed for tools that cannot charge', () => {
