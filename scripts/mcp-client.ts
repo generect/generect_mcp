@@ -1,5 +1,5 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { Client } from '@modelcontextprotocol/client';
 
 // Smoke test for the local stdio server.
 // By default it only calls FREE tools — a smoke test should never quietly bill

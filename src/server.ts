@@ -1,17 +1,13 @@
 import 'dotenv/config';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { registerTools } from './tools.js';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
+import { createMcpServer } from './mcp-server.js';
 import { toAuthHeader } from './auth/credential.js';
-import { VERSION, SERVER_NAME } from './version.js';
 
 const apiBase = process.env.GENERECT_API_BASE || 'https://api.generect.com';
 const rawApiKey = process.env.GENERECT_API_KEY || '';
 const apiKey = toAuthHeader(rawApiKey);
 
-const server = new McpServer({ name: SERVER_NAME, version: VERSION });
-
-registerTools(server, fetch, apiBase, apiKey);
-
-const transport = new StdioServerTransport();
-await server.connect(transport);
+// serveStdio owns the era decision for the connection: a 2026-07-28 client opens
+// with server/discover and is served statelessly, a 2025-era client opens with
+// initialize and gets the same server it always did. One instance per connection.
+serveStdio(() => createMcpServer(fetch, apiBase, apiKey));

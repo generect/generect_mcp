@@ -51,7 +51,7 @@ const COMMON = {
   test_mode_notice: z.string().optional(),
   cost: COST,
   vocabulary_warnings: VOCAB_PROBLEMS,
-  deprecated_params_ignored: z.record(z.string()).optional(),
+  deprecated_params_ignored: z.record(z.string(), z.string()).optional(),
 };
 
 const COUNT_OUTPUT: z.ZodRawShape = {

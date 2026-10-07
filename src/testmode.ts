@@ -21,6 +21,7 @@
 
 import { parseAuthHeader } from './auth/parse.js';
 import { verifyAccessToken, extractApiToken } from './auth/jwt.js';
+import { requestHeader } from './context.js';
 
 /** Prefix the API puts on every test key. Live keys are bare hex. */
 export const TEST_KEY_PREFIX = 'test_';
@@ -35,7 +36,10 @@ export const TEST_MODE_NOTICE =
 /** True when this credential is a Generect test key. */
 export function isTestCredential(credential: string | null | undefined): boolean {
   if (!credential) return false;
-  return credential.trim().replace(/^(bearer|token)\s+/i, '').startsWith(TEST_KEY_PREFIX);
+  return credential
+    .trim()
+    .replace(/^(bearer|token)\s+/i, '')
+    .startsWith(TEST_KEY_PREFIX);
 }
 
 /**
@@ -51,7 +55,7 @@ export function isTestCredential(credential: string | null | undefined): boolean
  */
 export async function isTestRequest(extra: any): Promise<boolean> {
   try {
-    const header = extra?.requestInfo?.headers?.authorization as string | undefined;
+    const header = requestHeader(extra, 'authorization');
     const parsed = parseAuthHeader(header);
     if (!parsed) return false;
     if (parsed.kind === 'token') return isTestCredential(parsed.apiKey);

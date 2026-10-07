@@ -95,7 +95,7 @@ if run "deploy $OLD" && [ "$(serving)" = "$(tip_version)" ]; then ok "stayed on 
 echo "6. a release that builds but crashes on start is rolled back"
 GOOD="$(tip_version)"
 (cd "$S/work" && git checkout -q main && git pull -q &&
-  sed -i "0,/^const app = express();/s//throw new Error('sandbox: simulated startup crash');\nconst app = express();/" src/http.ts &&
+  sed -i "1i throw new Error('sandbox: simulated startup crash');" src/http.ts &&
   node -e 'const f="package.json",p=require("./"+f);p.version+="-broken";require("fs").writeFileSync(f,JSON.stringify(p,null,2))' &&
   git -c user.email=t@t -c user.name=t commit -qam broken && git push -q origin main)
 if run deploy; then bad "broken release reported success"; else

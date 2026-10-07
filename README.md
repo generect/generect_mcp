@@ -31,7 +31,7 @@ Get an API key at [app.generect.com/settings/api](https://app.generect.com/setti
 
 ### Remote server (recommended)
 
-`https://mcp.generect.com/mcp` speaks streamable HTTP with OAuth 2.1, so most clients only need the URL.
+`https://mcp.generect.com/mcp` speaks streamable HTTP with OAuth 2.1, so most clients only need the URL. It serves MCP protocol revision 2026-07-28 (stateless, discovered via `server/discover`) and the 2025 revisions (2025-11-25, 2025-06-18) side by side, so any current client connects without settings.
 
 **Claude Code**
 
