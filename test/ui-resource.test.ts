@@ -49,8 +49,9 @@ test('the view resource is listed and readable as an MCP App page', async () => 
   assert.match(page.text, /^<!doctype html>/);
   // Without the color-scheme meta, Chromium paints an opaque backdrop in dark mode.
   assert.match(page.text, /<meta name="color-scheme" content="light dark">/);
-  assert.match(page.text, /<script>/);
-  assert.ok(!/<script src=/i.test(page.text), 'the page must be self-contained');
+  const lower = String(page.text).toLowerCase();
+  assert.ok(lower.includes('<script>'), 'the view script is inlined');
+  assert.ok(!lower.includes('<script src='), 'the page must be self-contained');
   assert.deepEqual(page._meta?.ui?.csp, { connectDomains: [], resourceDomains: ['https://assets.claude.ai'] });
   assert.equal(page._meta?.ui?.prefersBorder, false);
   await client.close();
