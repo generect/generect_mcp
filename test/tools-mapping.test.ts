@@ -425,6 +425,53 @@ test('get_balance: returns balance plus the account-specific price book', async 
   assert.match(r.prices_source, /account tier 3/);
 });
 
+test('get_balance: the balance is the wallet plus grants, to the cent (PRO-1749)', async () => {
+  // A sign-up bonus account: the wallet alone read $0 although every charge would be paid.
+  const { tools } = harness([
+    TIER_ROUTE,
+    {
+      match: /accounts\/me/,
+      body: {
+        data: {
+          email: 'a@b.com',
+          credits: { balance: 5, used_this_month: 0, available_usd: 5.25, wallet_usd: 0.25, perk_usd: 5, plan_usd: 0 },
+        },
+      },
+    },
+  ]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  assert.equal(r.balance_usd, 5.25);
+  assert.equal(r.wallet_usd, 0.25);
+  assert.equal(r.grants_usd, 5);
+});
+
+test('get_balance: an API without the split still reports its balance', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /accounts\/me/, body: { data: { email: 'a@b.com', credits: { balance: 7 } } } },
+  ]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  assert.equal(r.balance_usd, 7);
+  assert.equal(r.wallet_usd, null);
+  assert.equal(r.grants_usd, null);
+});
+
+test('health: reports the spendable balance, grants included', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    {
+      match: /accounts\/me/,
+      body: {
+        data: {
+          email: 'a@b.com',
+          credits: { balance: 3, available_usd: 3.5, wallet_usd: 0, perk_usd: 1.5, plan_usd: 2 },
+        },
+      },
+    },
+  ]);
+  assert.equal(out(await tools.health({}, EXTRA)).balance_usd, 3.5);
+});
+
 test('start_bulk_job: caps at 50, reserves a worst case, and points at the poll tool', async () => {
   const { tools, calls } = harness([
     TIER_ROUTE,

@@ -555,11 +555,19 @@ export function balanceView(data: any, fmt: Fmt = {}): string {
     .filter(([, v]) => v != null)
     .map(([k, v]) => fact(String(k), Number(v) === 0 ? 'Free' : usd(v, fmt)))
     .join('');
+  // The hero is wallet + grants (PRO-1749); say where it sits once grants are part of it.
+  const split =
+    Number(data.grants_usd) > 0
+      ? `<div class="facts">${fact('Wallet', usd(data.wallet_usd ?? 0, fmt))}${fact(
+          'Bonus and plan credit',
+          usd(data.grants_usd, fmt),
+        )}</div>`
+      : '';
   return `${header('Balance', data.email ? String(data.email) : '', costBadge(data, fmt))}<div class="hero">${esc(
     usd(data.balance_usd, fmt),
   )}</div><div class="hero-label">${
     data.used_this_month_usd != null ? `${esc(usd(data.used_this_month_usd, fmt))} used this month` : 'available'
-  }</div>${
+  }</div>${split}${
     prices
       ? `<div class="section-title">${
           /^account tier/.test(String(data.prices_source ?? '')) || data.prices_source == null

@@ -278,3 +278,12 @@ test('helpers', () => {
     '11-50',
   ]);
 });
+
+test('balance says where the money sits once grants are part of it (PRO-1749)', () => {
+  const html = balanceView({ balance_usd: 5.25, wallet_usd: 0.25, grants_usd: 5 });
+  assert.match(html, /\$5\.25/);
+  assert.match(html, /Wallet/);
+  assert.match(html, /Bonus and plan credit/);
+  assert.doesNotMatch(balanceView({ balance_usd: 12, wallet_usd: 12, grants_usd: 0 }), /Bonus and plan credit/);
+  assert.doesNotMatch(balanceView({ balance_usd: 12 }), /Bonus and plan credit/);
+});
