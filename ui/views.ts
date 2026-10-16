@@ -105,6 +105,7 @@ export function filterChips(args: any): string[] {
     'seniorities',
     'functions',
     'locations',
+    'company_locations',
     'company_names',
     'company_industries',
     'industries',

@@ -1,4 +1,5 @@
 import { test, before, after } from 'node:test';
+import { TOOL_ORDER } from '../src/tool-meta.ts';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
@@ -49,7 +50,7 @@ for (const [era, mode, sessionful] of [
     const { client, transport } = await connect(mode as any, `key-${era}`);
     try {
       assert.equal(Boolean((transport as any).sessionId), sessionful, 'session only on the 2025 path');
-      assert.equal((await client.listTools()).tools.length, 17);
+      assert.equal((await client.listTools()).tools.length, TOOL_ORDER.length);
       const r: any = await client.callTool({ name: 'count_leads', arguments: { job_titles: ['CEO'] } });
       assert.equal(r.structuredContent.results_count, 42);
       const call = seen.find(s => /search\/database\/leads\/count/.test(s.url))!;
@@ -179,7 +180,7 @@ for (const [version, sendsHeader] of [
     const list = await post({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
     assert.equal(list.status, 200, await list.clone().text());
     const listed = messages(await list.text()).find(m => m.id === 2);
-    assert.equal(listed.result.tools.length, 17, JSON.stringify(listed));
+    assert.equal(listed.result.tools.length, TOOL_ORDER.length, JSON.stringify(listed));
 
     const call = await post({
       jsonrpc: '2.0',
@@ -263,7 +264,11 @@ test('express /mcp: a 2025-03-26 session answers a batch, and a key change mid-s
   );
   assert.equal(batch.status, 200);
   const answered = messages(await batch.text()).flat();
-  assert.equal(answered.find(m => m.id === 2)?.result.tools.length, 17, JSON.stringify(answered).slice(0, 300));
+  assert.equal(
+    answered.find(m => m.id === 2)?.result.tools.length,
+    TOOL_ORDER.length,
+    JSON.stringify(answered).slice(0, 300),
+  );
   assert.deepEqual(answered.find(m => m.id === 3)?.result, {});
 
   // The same tool on the same session, first under the key the session opened with,
@@ -303,7 +308,7 @@ test('express /mcp: a 2026-07-28 GET or DELETE (no session) gets the SDK 405, a 
   const { client, transport } = await connect({ pin: '2026-07-28' }, 'resume-key');
   try {
     await (transport as any).resumeStream('lost-event-id');
-    assert.equal((await client.listTools()).tools.length, 17);
+    assert.equal((await client.listTools()).tools.length, TOOL_ORDER.length);
   } finally {
     await client.close();
   }

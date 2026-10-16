@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { registerTools } from '../src/tools.ts';
 import { ctxWith } from './helpers-ctx.ts';
-import { resetPriceBookCache } from '../src/pricing.ts';
+import { resetPriceBookCache, listPrice, type Operation } from '../src/pricing.ts';
 import { TOOL_META, TOOL_ORDER } from '../src/tool-meta.ts';
 
 // Register the tools against a fake McpServer that captures handlers, and a fake
@@ -461,19 +461,42 @@ test('get_bulk_job: polling is free and hits the shared status path', async () =
   assert.equal(r.job.status, 'completed');
 });
 
-test('manage_webhooks: create validates its inputs, delete requires an id', async () => {
+test('webhooks: one tool per operation, each hitting its own method and path', async () => {
   const { tools, calls } = harness([TIER_ROUTE, { match: /webhooks/, body: { data: { id: 'wh_1' } } }]);
-  const missing = await tools.manage_webhooks({ action: 'create', url: 'https://x.test/hook' }, EXTRA);
-  assert.equal(missing.isError, true);
-  const noId = await tools.manage_webhooks({ action: 'delete' }, EXTRA);
-  assert.equal(noId.isError, true);
-  await tools.manage_webhooks(
-    { action: 'create', url: 'https://x.test/hook', events: ['email.find.bulk.completed'] },
-    EXTRA,
-  );
-  const call = calls.find(c => /webhooks/.test(c.url))!;
-  assert.equal(call.method, 'POST');
-  assert.deepEqual(call.body, { url: 'https://x.test/hook', events: ['email.find.bulk.completed'] });
+  // Validation happens before anything is sent.
+  assert.equal((await tools.create_webhook({ url: 'https://x.test/hook' }, EXTRA)).isError, true);
+  assert.equal((await tools.delete_webhook({}, EXTRA)).isError, true);
+  assert.equal((await tools.update_webhook({ id: 'wh_1' }, EXTRA)).isError, true, 'an empty update is refused');
+  assert.equal(calls.filter(c => /webhooks/.test(c.url)).length, 0);
+
+  const expect: Array<[string, any, string, RegExp, any]> = [
+    ['list_webhooks', {}, 'GET', /\/webhooks\/$/, null],
+    [
+      'create_webhook',
+      { url: 'https://x.test/hook', events: ['email.find.bulk.completed'], secret: 's' },
+      'POST',
+      /\/webhooks\/$/,
+      { url: 'https://x.test/hook', events: ['email.find.bulk.completed'], secret: 's' },
+    ],
+    [
+      'update_webhook',
+      { id: 'wh_1', url: 'https://y.test/hook' },
+      'PATCH',
+      /\/webhooks\/wh_1\/$/,
+      { url: 'https://y.test/hook' },
+    ],
+    ['delete_webhook', { id: 'wh_1' }, 'DELETE', /\/webhooks\/wh_1\/$/, null],
+    ['test_webhook', { id: 'wh_1' }, 'POST', /\/webhooks\/wh_1\/test\/$/, {}],
+  ];
+  for (const [name, args, method, path, body] of expect) {
+    calls.length = 0;
+    const r = out(await tools[name](args, EXTRA));
+    const call = calls.find(c => /webhooks/.test(c.url))!;
+    assert.equal(call.method, method, name);
+    assert.match(call.url, path, name);
+    assert.deepEqual(call.body, body, name);
+    assert.equal(r.cost.amount_charged_usd, 0, `${name} is free`);
+  }
 });
 
 test('health: verifies the credential on a FREE endpoint, never a data endpoint', async () => {
@@ -707,7 +730,7 @@ test('resolve_profile: the price survives a tier that does not list this service
   ]);
   const r = out(await tools.resolve_profile({ url: 'x' }, EXTRA));
   assert.equal(r.cost.amount_charged_usd, 0.0005, 'the receipt always quotes the biller, never our arithmetic');
-  assert.match(r.cost.billed, /per RESOLVED profile/);
+  assert.match(r.cost.billed, /per resolved profile/i);
 });
 
 // ---------------------------------------------------------------------------
@@ -896,7 +919,7 @@ test('every tool that can charge asks first; only webhook management is destruct
   // Hosts run read-only tools without asking, so a tool that can spend the
   // balance must not claim readOnlyHint. count_* is the documented exception
   // (free unless mode:"realtime" is passed on purpose).
-  const free = ['count_leads', 'count_companies', 'get_balance', 'get_bulk_job', 'health'];
+  const free = ['count_leads', 'count_companies', 'get_balance', 'get_bulk_job', 'health', 'list_webhooks'];
   for (const n of TOOL_ORDER) {
     const a = TOOL_META[n].annotations;
     if (free.includes(n)) assert.equal(a.readOnlyHint, true, `${n} is free and should be read-only`);
@@ -905,12 +928,19 @@ test('every tool that can charge asks first; only webhook management is destruct
     assert.equal(typeof (a.readOnlyHint === false ? a.destructiveHint : a.readOnlyHint), 'boolean', `${n} hint`);
   }
   const destructive = TOOL_ORDER.filter(n => TOOL_META[n].annotations.destructiveHint === true);
-  assert.deepEqual(destructive, ['manage_webhooks']);
+  assert.deepEqual(destructive, ['update_webhook', 'delete_webhook']);
 });
 
 test('idempotency is only claimed for tools that cannot charge', () => {
   const idempotent = TOOL_ORDER.filter(n => TOOL_META[n].annotations.idempotentHint === true);
-  assert.deepEqual(idempotent.sort(), ['count_companies', 'count_leads', 'get_balance', 'get_bulk_job', 'health']);
+  assert.deepEqual(idempotent.sort(), [
+    'count_companies',
+    'count_leads',
+    'get_balance',
+    'get_bulk_job',
+    'health',
+    'list_webhooks',
+  ]);
 });
 
 test("every successful payload validates against the tool's own output schema", async () => {
@@ -962,7 +992,11 @@ test("every successful payload validates against the tool's own output schema", 
     find_phone: { lead_id: 'ACwAAA1' },
     start_bulk_job: { job_type: 'email_find', items: [{ lead_id: 'a' }] },
     get_bulk_job: { job_type: 'email_find', job_id: 'j' },
-    manage_webhooks: { action: 'list' },
+    list_webhooks: {},
+    create_webhook: { url: 'https://x.test/hook', events: ['email.find.bulk.completed'] },
+    update_webhook: { id: 'wh_1', url: 'https://x.test/hook' },
+    delete_webhook: { id: 'wh_1' },
+    test_webhook: { id: 'wh_1' },
   };
   const { tools } = harness(GENERIC as any);
   for (const name of TOOL_ORDER) {
@@ -1325,4 +1359,65 @@ test('count_leads: the next-step estimate mentions the free thin search', async 
   ]);
   const r = out(await tools.count_leads({ job_titles: ['CEO'] }, EXTRA));
   assert.match(r.next_step_estimate.thin_search, /free/);
+});
+
+test('tool metadata meets the Claude directory rules', async () => {
+  // claude.com/docs/connectors/building/review-criteria: a title and an explicit
+  // readOnlyHint or destructiveHint on every tool, names of 64 characters or
+  // fewer, no tool that mixes reads and writes, and descriptions that say what
+  // the tool does rather than tell the model how to behave.
+  const descriptions: Record<string, string> = {};
+  const server: any = {
+    registerTool: (name: string, config: any) => (descriptions[name] = String(config.description ?? '')),
+  };
+  registerTools(server, (async () => new Response('{}')) as any, 'https://api.test', '');
+  for (const name of TOOL_ORDER) {
+    const a = TOOL_META[name].annotations;
+    assert.ok(name.length <= 64, `${name} is longer than 64 characters`);
+    assert.ok(TOOL_META[name].title.length > 0, `${name} has no title`);
+    assert.ok(a.readOnlyHint === true || typeof a.destructiveHint === 'boolean', `${name} needs an explicit hint`);
+    const d = descriptions[name];
+    assert.ok(d.length > 0, `${name} has no description`);
+    for (const banned of [
+      /\bALWAYS\b/,
+      /\bNEVER\b/,
+      /\bDo not\b/,
+      /\bYou must\b/i,
+      /\bconfirm with the user\b/i,
+      /—/,
+    ]) {
+      assert.ok(!banned.test(d), `${name} description matches ${banned}: ${d}`);
+    }
+  }
+  assert.ok(!TOOL_ORDER.includes('manage_webhooks'), 'the mixed read/write webhook tool is gone');
+});
+
+test('list prices are the backend base prices, and descriptions quote them', async () => {
+  // PriceSetting on prod, read 2026-10-16 (docs.generect.com/billing/pricing
+  // publishes the same). Until 0.13.0 the fallback said $0.02 realtime and
+  // $0.0067 cached, so an agent without the account tier quoted too little.
+  const expected: Partial<Record<Operation, number>> = {
+    count_realtime: 0.04,
+    search_realtime: 0.04,
+    enrich_realtime: 0.04,
+    search_database: 0.02,
+    enrich_database: 0.02,
+    preview: 0.002,
+    email_find: 0.02,
+    email_validate: 0.005,
+    phone_find: 0.4,
+    profile_resolve: 0.0005,
+  };
+  for (const [op, usd] of Object.entries(expected)) assert.equal(listPrice(op as Operation), usd, op);
+  const descriptions: Record<string, string> = {};
+  const server: any = {
+    registerTool: (name: string, config: any) => (descriptions[name] = String(config.description ?? '')),
+  };
+  registerTools(server, (async () => new Response('{}')) as any, 'https://api.test', '');
+  for (const name of ['count_leads', 'count_companies']) {
+    assert.match(descriptions[name], /realtime count[^.]*\$0\.04/, name);
+  }
+  for (const [name, d] of Object.entries(descriptions)) {
+    assert.ok(!/\$0\.0067/.test(d), `${name} still quotes the old cached price`);
+  }
 });

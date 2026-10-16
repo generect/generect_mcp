@@ -14,8 +14,9 @@ import { z } from 'zod';
 //                    read-only tools without asking (Claude auto-approves them), so
 //                    every tool that can charge is false and the host asks first.
 //                    The one exception is count_*: free by default; a realtime count
-//                    ($0.02) only runs on an explicit mode:"realtime".
-//   destructiveHint- reserved for calls that can remove something.
+//                    ($0.04 at list price) only runs on an explicit mode:"realtime".
+//   destructiveHint- reserved for calls that can remove or redirect something a
+//                    customer depends on (update_webhook, delete_webhook).
 //   idempotentHint - claimed ONLY for free calls. A repeated billable call has a
 //                    very real additional effect: it charges again.
 //   openWorldHint  - true everywhere: this server talks to live external data.
@@ -99,6 +100,16 @@ const RECORD_OUTPUT: z.ZodRawShape = {
   company: z.any().optional(),
 };
 
+/** Changes state on Generect's side but removes nothing. */
+const WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: true } as const;
+/** Changes or removes something a customer's pipeline may depend on. */
+const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, openWorldHint: true } as const;
+const WEBHOOK_OUTPUT: z.ZodRawShape = {
+  ...COMMON,
+  action: z.string().optional(),
+  webhooks: z.any().optional(),
+};
+
 /** Reads data but can charge the balance: not read-only, and not destructive either. */
 const PAID = { readOnlyHint: false, destructiveHint: false, openWorldHint: true } as const;
 const FREE_READ_ONLY = { readOnlyHint: true, idempotentHint: true, openWorldHint: true } as const;
@@ -159,17 +170,14 @@ export const TOOL_META: Record<string, ToolMeta> = {
       ms: z.number().optional(),
     },
   },
-  manage_webhooks: {
-    title: 'Manage webhook endpoints',
-    // The only tool here that changes state on Generect's side, and `delete`
-    // removes a subscription the customer's pipeline may depend on.
-    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
-    outputSchema: {
-      ...COMMON,
-      action: z.string().optional(),
-      webhooks: z.any().optional(),
-    },
-  },
+  // Webhook endpoints: free, one tool per operation. Listing reads; creating and
+  // sending a test event write but remove nothing; updating and deleting can cut
+  // off a pipeline that depends on the subscription, so they are destructive.
+  list_webhooks: { title: 'List webhooks (free)', annotations: FREE_READ_ONLY, outputSchema: WEBHOOK_OUTPUT },
+  create_webhook: { title: 'Create a webhook (free)', annotations: WRITE, outputSchema: WEBHOOK_OUTPUT },
+  update_webhook: { title: 'Update a webhook (free)', annotations: DESTRUCTIVE, outputSchema: WEBHOOK_OUTPUT },
+  delete_webhook: { title: 'Delete a webhook (free)', annotations: DESTRUCTIVE, outputSchema: WEBHOOK_OUTPUT },
+  test_webhook: { title: 'Send a test webhook event (free)', annotations: WRITE, outputSchema: WEBHOOK_OUTPUT },
 
   // ---- billable ----
   search_leads: {
@@ -258,5 +266,9 @@ export const TOOL_ORDER: readonly string[] = [
   'find_phone',
   'start_bulk_job',
   'get_bulk_job',
-  'manage_webhooks',
+  'list_webhooks',
+  'create_webhook',
+  'update_webhook',
+  'delete_webhook',
+  'test_webhook',
 ];

@@ -28,7 +28,7 @@ count_leads (free)  →  preview_leads (cheapest paid)  →  search_leads (per r
 | Operation | Billed |
 |-----------|--------|
 | `count_leads`, `count_companies` (cached mode) | **free** |
-| `get_balance`, `get_bulk_job`, `manage_webhooks`, `health` | **free** |
+| `get_balance`, `get_bulk_job`, `health`, the webhook tools (`list_webhooks`, `create_webhook`, `update_webhook`, `delete_webhook`, `test_webhook`) | **free** |
 | `preview_leads` | per returned row — the cheapest way to see real people |
 | `search_leads`, `search_companies` | per returned row |
 | `resolve_profile` | per **resolved** profile — the cheapest call here; an unresolvable reference is free |
@@ -160,7 +160,7 @@ balance and wait — do not retry, and do not fall back to a different tool.
 - Submit with `start_bulk_job` (max 50 records). The cost is **reserved at submit
   time**, so a submitted job keeps running and keeps charging even if you stop
   polling or the balance later hits zero. Only submit lists that were approved.
-- Register a completion webhook with `manage_webhooks` instead of polling in a
+- Register a completion webhook with `create_webhook` instead of polling in a
   loop. Polling with `get_bulk_job` is free, but a tight loop is still abuse.
 - For a cron job, put a hard cap in the job itself: a maximum spend per run, and
   a `get_balance` check before starting. An unattended agent has nobody to ask.
