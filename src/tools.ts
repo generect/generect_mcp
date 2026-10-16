@@ -9,7 +9,16 @@ import { parseAuthHeader } from './auth/parse.js';
 import { toAuthHeader } from './auth/credential.js';
 import { annotate as annotateTestMode, isTestRequest } from './testmode.js';
 import { VERSION } from './version.js';
-import { fetchPriceBook, priceTag, listPrice, receipt, estimate, round, type Operation, type PriceBook } from './pricing.js';
+import {
+  fetchPriceBook,
+  priceTag,
+  listPrice,
+  receipt,
+  estimate,
+  round,
+  type Operation,
+  type PriceBook,
+} from './pricing.js';
 import { TOOL_META, TOOL_ORDER } from './tool-meta.js';
 import { registerResources } from './resources.js';
 import { registerPrompts } from './prompts.js';
