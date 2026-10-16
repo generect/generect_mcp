@@ -425,8 +425,8 @@ test('get_balance: returns balance plus the account-specific price book', async 
   assert.match(r.prices_source, /account tier 3/);
 });
 
-test('get_balance: the balance is the wallet plus grants, to the cent (PRO-1749)', async () => {
-  // A sign-up bonus account: the wallet alone read $0 although every charge would be paid.
+test('get_balance: the wallet to the cent, grants beside it (PRO-1749)', async () => {
+  // A sign-up bonus account: the whole-dollar wallet read $0 and the grant was nowhere.
   const { tools } = harness([
     TIER_ROUTE,
     {
@@ -434,15 +434,14 @@ test('get_balance: the balance is the wallet plus grants, to the cent (PRO-1749)
       body: {
         data: {
           email: 'a@b.com',
-          credits: { balance: 5, used_this_month: 0, available_usd: 5.25, wallet_usd: 0.25, perk_usd: 5, plan_usd: 0 },
+          credits: { balance: 0, used_this_month: 0, wallet_usd: 0.25, perk_usd: 5, plan_usd: 1.5 },
         },
       },
     },
   ]);
   const r = out(await tools.get_balance({}, EXTRA));
-  assert.equal(r.balance_usd, 5.25);
-  assert.equal(r.wallet_usd, 0.25);
-  assert.equal(r.grants_usd, 5);
+  assert.equal(r.balance_usd, 0.25);
+  assert.equal(r.grants_usd, 6.5);
 });
 
 test('get_balance: an API without the split still reports its balance', async () => {
@@ -452,11 +451,10 @@ test('get_balance: an API without the split still reports its balance', async ()
   ]);
   const r = out(await tools.get_balance({}, EXTRA));
   assert.equal(r.balance_usd, 7);
-  assert.equal(r.wallet_usd, null);
   assert.equal(r.grants_usd, null);
 });
 
-test('health: reports the spendable balance, grants included', async () => {
+test('health: reports the wallet to the cent, grants not added in', async () => {
   const { tools } = harness([
     TIER_ROUTE,
     {
@@ -464,7 +462,7 @@ test('health: reports the spendable balance, grants included', async () => {
       body: {
         data: {
           email: 'a@b.com',
-          credits: { balance: 3, available_usd: 3.5, wallet_usd: 0, perk_usd: 1.5, plan_usd: 2 },
+          credits: { balance: 3, wallet_usd: 3.5, perk_usd: 1.5, plan_usd: 2 },
         },
       },
     },

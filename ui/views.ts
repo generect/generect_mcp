@@ -555,13 +555,10 @@ export function balanceView(data: any, fmt: Fmt = {}): string {
     .filter(([, v]) => v != null)
     .map(([k, v]) => fact(String(k), Number(v) === 0 ? 'Free' : usd(v, fmt)))
     .join('');
-  // The hero is wallet + grants (PRO-1749); say where it sits once grants are part of it.
+  // The hero is the wallet; grants sit beside it, never added in (PRO-1749).
   const split =
     Number(data.grants_usd) > 0
-      ? `<div class="facts">${fact('Wallet', usd(data.wallet_usd ?? 0, fmt))}${fact(
-          'Bonus and plan credit',
-          usd(data.grants_usd, fmt),
-        )}</div>`
+      ? `<div class="facts">${fact('Bonus and plan credit', usd(data.grants_usd, fmt))}</div>`
       : '';
   return `${header('Balance', data.email ? String(data.email) : '', costBadge(data, fmt))}<div class="hero">${esc(
     usd(data.balance_usd, fmt),

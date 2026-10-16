@@ -299,24 +299,17 @@ function apiError(err: any) {
 
 const V1 = '/api/v1';
 
-/**
- * The money in an /accounts/me `credits` block (PRO-1749). A charge spends the
- * account's grants (sign-up bonus, perks, credit-plan allowance) before the
- * wallet, so the balance an agent reports is the two together; the wallet alone
- * read $0 for every account living on its grants. Exact amounts come from the
- * *_usd fields; an API without them only has the whole-dollar `balance`.
- */
+/** Wallet and grants from an /accounts/me `credits` block, kept apart as the app shows them (PRO-1749). */
 export function balanceFields(credits: any): {
   balance_usd: number | null;
-  wallet_usd: number | null;
   grants_usd: number | null;
 } {
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const perk = num(credits?.perk_usd);
   const plan = num(credits?.plan_usd);
   return {
-    balance_usd: num(credits?.available_usd) ?? num(credits?.balance),
-    wallet_usd: num(credits?.wallet_usd),
+    // An API without the *_usd fields only has the whole-dollar wallet.
+    balance_usd: num(credits?.wallet_usd) ?? num(credits?.balance),
     grants_usd: perk == null && plan == null ? null : Math.round(((perk ?? 0) + (plan ?? 0)) * 10000) / 10000,
   };
 }
@@ -1321,7 +1314,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'get_balance',
-    `Account balance, month-to-date usage and THIS account's real per-operation prices. ${priceTag('count_database')} balance_usd is everything the account can spend: the wallet plus grants (sign-up bonus, perks, plan allowance), which are spent first; wallet_usd and grants_usd split it. A perk never pays for phone numbers. Call it before a batch of paid work (so you can tell the user what they can afford) and after (so you can report exactly what was spent). The prices it returns beat any number in a tool description — those are list prices.`,
+    `Account balance, month-to-date usage and THIS account's real per-operation prices. ${priceTag('count_database')} balance_usd is the wallet; grants_usd is bonus and plan credit (sign-up bonus, perks, plan allowance), reported apart. Grants are spent first, but only on the operations each one covers: a promo perk or a plan allowance may not pay for API calls, and a perk never pays for phone numbers. Report both figures; do not add them up as what the user can spend. Call it before a batch of paid work (so you can tell the user what they can afford) and after (so you can report exactly what was spent). The prices it returns beat any number in a tool description — those are list prices.`,
     {
       include_transactions: z
         .number()
