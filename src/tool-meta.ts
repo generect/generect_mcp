@@ -122,6 +122,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
       ...COMMON,
       email: z.string().nullable().optional(),
       balance_usd: z.number().nullable().optional(),
+      grants_usd: z.number().nullable().optional(),
       used_this_month_usd: z.number().nullable().optional(),
       preview_tier: z.boolean().nullable().optional(),
       your_prices_usd: z.any().optional(),

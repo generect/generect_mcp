@@ -299,6 +299,21 @@ function apiError(err: any) {
 
 const V1 = '/api/v1';
 
+/** Wallet and grants from an /accounts/me `credits` block, kept apart as the app shows them (PRO-1749). */
+export function balanceFields(credits: any): {
+  balance_usd: number | null;
+  grants_usd: number | null;
+} {
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const perk = num(credits?.perk_usd);
+  const plan = num(credits?.plan_usd);
+  return {
+    // An API without the *_usd fields only has the whole-dollar wallet.
+    balance_usd: num(credits?.wallet_usd) ?? num(credits?.balance),
+    grants_usd: perk == null && plan == null ? null : Math.round(((perk ?? 0) + (plan ?? 0)) * 10000) / 10000,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Vocabulary gate
 // ---------------------------------------------------------------------------
@@ -1299,7 +1314,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'get_balance',
-    `Account balance, month-to-date usage and THIS account's real per-operation prices. ${priceTag('count_database')} Call it before a batch of paid work (so you can tell the user what they can afford) and after (so you can report exactly what was spent). The prices it returns beat any number in a tool description — those are list prices.`,
+    `Account balance, month-to-date usage and THIS account's real per-operation prices. ${priceTag('count_database')} balance_usd is the wallet; grants_usd is bonus and plan credit (sign-up bonus, perks, plan allowance), reported apart. Grants are spent first, but only on the operations each one covers: a promo perk or a plan allowance may not pay for API calls, and a perk never pays for phone numbers. Report both figures; do not add them up as what the user can spend. Call it before a batch of paid work (so you can tell the user what they can afford) and after (so you can report exactly what was spent). The prices it returns beat any number in a tool description — those are list prices.`,
     {
       include_transactions: z
         .number()
@@ -1330,7 +1345,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         );
         const out: Record<string, unknown> = {
           email: account?.data?.email ?? null,
-          balance_usd: account?.data?.credits?.balance ?? null,
+          ...balanceFields(account?.data?.credits),
           used_this_month_usd: account?.data?.credits?.used_this_month ?? null,
           preview_tier: account?.data?.preview_tier ?? null,
           cost: { operation: 'account', amount_charged_usd: 0, billed: 'free endpoint' },
@@ -2270,7 +2285,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           );
           out.credential_valid = true;
           out.account = data?.data?.email ?? null;
-          out.balance_usd = data?.data?.credits?.balance ?? null;
+          out.balance_usd = balanceFields(data?.data?.credits).balance_usd;
         } catch (err: any) {
           out.ok = false;
           out.credential_valid = false;
