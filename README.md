@@ -118,7 +118,7 @@ The views follow the host's theme (light and dark), fonts and layout, and work o
 | `search_companies` | Companies matching an ICP. Free with the default thin rows (database mode, daily quota). |
 | `get_balance` | Balance, your real per-operation prices, and optionally spend by operation or by token. |
 | `get_bulk_job` | Poll a bulk job (the work was billed at submit time). |
-| `manage_webhooks` | List, create, update, delete or test webhook endpoints. |
+| `list_webhooks`, `create_webhook`, `update_webhook`, `delete_webhook`, `test_webhook` | Manage the webhook endpoints that receive bulk-job completion events. |
 | `health` | Liveness and credential check against a free endpoint. Safe for monitors. |
 
 **Billable**

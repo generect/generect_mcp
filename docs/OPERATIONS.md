@@ -31,7 +31,7 @@ so the hosted server still runs as a single instance.
 
 ## Tool annotations
 
-`src/tool-meta.ts` holds every tool's title and annotations in one table. Hosts auto-approve tools marked `readOnlyHint: true` (Claude runs them without asking), so a tool that can spend the balance is `readOnlyHint: false, destructiveHint: false`: it changes nothing but the balance, and the host asks first. Only `count_leads`, `count_companies`, `get_balance`, `get_bulk_job` and `health` are read-only; counts stay read-only because a paid realtime count needs an explicit `mode: "realtime"`. `manage_webhooks` is the only destructive tool. `test/tools-mapping.test.ts` pins this split.
+`src/tool-meta.ts` holds every tool's title and annotations in one table. Hosts auto-approve tools marked `readOnlyHint: true` (Claude runs them without asking), so a tool that can spend the balance is `readOnlyHint: false, destructiveHint: false`: it changes nothing but the balance, and the host asks first. Only `count_leads`, `count_companies`, `get_balance`, `get_bulk_job`, `health` and `list_webhooks` are read-only; counts stay read-only because a paid realtime count needs an explicit `mode: "realtime"`. Webhooks are one tool per operation (the Claude directory rejects a tool that mixes reads and writes): `create_webhook` and `test_webhook` write, `update_webhook` and `delete_webhook` are the only destructive tools. Descriptions say what a tool does and costs, never how the model should behave (directory review rejects imperative instructions); `test/tools-mapping.test.ts` pins both rules. `test/tools-mapping.test.ts` pins this split.
 
 ## MCP Apps view
 

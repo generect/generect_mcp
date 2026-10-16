@@ -51,16 +51,16 @@ const BILLING_UNIT: Record<Operation, string> = {
   count_database: 'always free',
   count_realtime: 'flat, per request, even when the count is 0',
   search_database: 'per returned row (0 rows costs $0)',
-  search_thin: 'free — thin rows up to a daily per-account quota, then 429 (never billed)',
+  search_thin: 'free: thin rows up to a daily per-account quota, then 429 (never billed)',
   search_realtime: 'per returned row (0 rows costs $0)',
   enrich_database: 'per record found (not-found is refunded)',
   enrich_realtime: 'per record found (not-found is refunded)',
   preview: 'per returned row',
   email_find: 'per VALID email found (a miss is free)',
-  email_validate: 'per email submitted — every address is billed, whatever the verdict',
+  email_validate: 'per email submitted (every address is billed, whatever the verdict)',
   phone_find: 'per phone found (a miss is free)',
   profile_resolve:
-    'per RESOLVED profile (an unresolvable reference is free) — duplicates in one batch are billed per row, so deduplicate first',
+    'per resolved profile (an unresolvable reference is free; duplicates in one batch are billed per row)',
 };
 
 // Field names in the account tier endpoint -> our operations.
@@ -153,8 +153,11 @@ export async function fetchPriceBook(
 /** Human-readable price tag for a tool description (uses list prices — descriptions are static). */
 export function priceTag(op: Operation): string {
   const price = LIST_PRICE_USD[op];
-  if (price === 0) return 'FREE — this call never spends credits.';
-  return `BILLABLE — about $${price} ${BILLING_UNIT[op]} (Tier 0 list price; your account may pay a different rate — call get_balance for your real prices, and read cost.amount_charged in every response for what was actually spent).`;
+  if (price === 0) return 'Free: this call never spends credits.';
+  // Descriptive, not imperative: directory review rejects tool descriptions that
+  // tell the model how to behave. The facts (list price, where the real price
+  // and the real charge live) are what a model needs to plan spend.
+  return `Billable: about $${price} ${BILLING_UNIT[op]} at the Tier 0 list price. Accounts can pay a different rate: get_balance returns this account's prices, and every response reports what was actually spent in cost.amount_charged_usd.`;
 }
 
 export function billingUnit(op: Operation): string {
