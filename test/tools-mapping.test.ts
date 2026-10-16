@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { registerTools } from '../src/tools.ts';
 import { ctxWith } from './helpers-ctx.ts';
-import { resetPriceBookCache } from '../src/pricing.ts';
+import { resetPriceBookCache, listPrice, type Operation } from '../src/pricing.ts';
 import { TOOL_META, TOOL_ORDER } from '../src/tool-meta.ts';
 
 // Register the tools against a fake McpServer that captures handlers, and a fake
@@ -1390,4 +1390,34 @@ test('tool metadata meets the Claude directory rules', async () => {
     }
   }
   assert.ok(!TOOL_ORDER.includes('manage_webhooks'), 'the mixed read/write webhook tool is gone');
+});
+
+test('list prices are the backend base prices, and descriptions quote them', async () => {
+  // PriceSetting on prod, read 2026-10-16 (docs.generect.com/billing/pricing
+  // publishes the same). Until 0.13.0 the fallback said $0.02 realtime and
+  // $0.0067 cached, so an agent without the account tier quoted too little.
+  const expected: Partial<Record<Operation, number>> = {
+    count_realtime: 0.04,
+    search_realtime: 0.04,
+    enrich_realtime: 0.04,
+    search_database: 0.02,
+    enrich_database: 0.02,
+    preview: 0.002,
+    email_find: 0.02,
+    email_validate: 0.005,
+    phone_find: 0.4,
+    profile_resolve: 0.0005,
+  };
+  for (const [op, usd] of Object.entries(expected)) assert.equal(listPrice(op as Operation), usd, op);
+  const descriptions: Record<string, string> = {};
+  const server: any = {
+    registerTool: (name: string, config: any) => (descriptions[name] = String(config.description ?? '')),
+  };
+  registerTools(server, (async () => new Response('{}')) as any, 'https://api.test', '');
+  for (const name of ['count_leads', 'count_companies']) {
+    assert.match(descriptions[name], /realtime count[^.]*\$0\.04/, name);
+  }
+  for (const [name, d] of Object.entries(descriptions)) {
+    assert.ok(!/\$0\.0067/.test(d), `${name} still quotes the old cached price`);
+  }
 });

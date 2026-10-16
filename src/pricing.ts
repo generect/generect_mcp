@@ -17,22 +17,22 @@ export type Operation =
   | 'phone_find'
   | 'profile_resolve';
 
-// Published Tier 0 prices (docs.generect.com/billing/pricing). These are the
-// FALLBACK only. Real accounts sit on a discount tier and — as of 2026-08 — the
-// live billing for cached search does not match the published Tier 0 number, so
-// quoting these as if they were the truth is how an agent ends up lying to a
-// user about spend. `fetchPriceBook` replaces them with the account's own rates
-// whenever the tier endpoint is reachable.
+// Tier 0 prices: the backend's base prices (PriceSetting, read on prod
+// 2026-10-16), which docs.generect.com/billing/pricing also publishes. These are
+// the FALLBACK only: a custom-priced or discounted account pays something else,
+// and `fetchPriceBook` replaces them with the account's own rates whenever the
+// tier endpoint is reachable. Until 0.13.0 this table carried $0.02 realtime
+// and $0.0067 cached, below what prod charges.
 const LIST_PRICE_USD: Record<Operation, number> = {
   count_database: 0,
-  count_realtime: 0.02,
-  search_database: 0.0067,
+  count_realtime: 0.04,
+  search_database: 0.02,
   // `detail: "thin"` on a database search: free up to a per-account daily row
   // quota, then the API answers 429 — it never bills. Flat across tiers.
   search_thin: 0,
-  search_realtime: 0.02,
-  enrich_database: 0.0067,
-  enrich_realtime: 0.02,
+  search_realtime: 0.04,
+  enrich_database: 0.02,
+  enrich_realtime: 0.04,
   preview: 0.002,
   email_find: 0.02,
   email_validate: 0.005,
@@ -158,6 +158,11 @@ export function priceTag(op: Operation): string {
   // tell the model how to behave. The facts (list price, where the real price
   // and the real charge live) are what a model needs to plan spend.
   return `Billable: about $${price} ${BILLING_UNIT[op]} at the Tier 0 list price. Accounts can pay a different rate: get_balance returns this account's prices, and every response reports what was actually spent in cost.amount_charged_usd.`;
+}
+
+/** The Tier 0 list price of one unit of `op`, for text that quotes it. */
+export function listPrice(op: Operation): number {
+  return LIST_PRICE_USD[op];
 }
 
 export function billingUnit(op: Operation): string {

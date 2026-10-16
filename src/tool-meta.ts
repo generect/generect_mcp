@@ -14,7 +14,7 @@ import { z } from 'zod';
 //                    read-only tools without asking (Claude auto-approves them), so
 //                    every tool that can charge is false and the host asks first.
 //                    The one exception is count_*: free by default; a realtime count
-//                    ($0.02) only runs on an explicit mode:"realtime".
+//                    ($0.04 at list price) only runs on an explicit mode:"realtime".
 //   destructiveHint- reserved for calls that can remove or redirect something a
 //                    customer depends on (update_webhook, delete_webhook).
 //   idempotentHint - claimed ONLY for free calls. A repeated billable call has a

@@ -9,7 +9,7 @@ import { parseAuthHeader } from './auth/parse.js';
 import { toAuthHeader } from './auth/credential.js';
 import { annotate as annotateTestMode, isTestRequest } from './testmode.js';
 import { VERSION } from './version.js';
-import { fetchPriceBook, priceTag, receipt, estimate, round, type Operation, type PriceBook } from './pricing.js';
+import { fetchPriceBook, priceTag, listPrice, receipt, estimate, round, type Operation, type PriceBook } from './pricing.js';
 import { TOOL_META, TOOL_ORDER } from './tool-meta.js';
 import { registerResources } from './resources.js';
 import { registerPrompts } from './prompts.js';
@@ -1096,7 +1096,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'count_leads',
-    `How many leads match an ICP, and what pulling them would cost at this account's prices. ${priceTag('count_database')} It is the only way to size an audience without paying per row, which makes it the first step before search_leads. A realtime count is not free ($0.02 flat); it runs only when mode:"realtime" is passed explicitly.`,
+    `How many leads match an ICP, and what pulling them would cost at this account's prices. ${priceTag('count_database')} It is the only way to size an audience without paying per row, which makes it the first step before search_leads. A realtime count is not free ($${listPrice('count_realtime')} flat at the Tier 0 list price); it runs only when mode:"realtime" is passed explicitly.`,
     {
       ...LEAD_FILTERS,
       ...LEGACY_LEAD_SHAPE,
@@ -1163,7 +1163,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           });
         }
 
-        // Free path. If the filters cannot run here, DON'T silently spend $0.02
+        // Free path. If the filters cannot run here, DON'T silently spend $0.04
         // on a live count — say what it would take and let the caller decide.
         try {
           const data = await callApi(
@@ -1216,7 +1216,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'count_companies',
-    `How many companies match an ICP, and what pulling them would cost. ${priceTag('count_database')} The first step before search_companies. As with count_leads, a realtime count costs $0.02 and runs only when mode:"realtime" is passed explicitly.`,
+    `How many companies match an ICP, and what pulling them would cost. ${priceTag('count_database')} The first step before search_companies. As with count_leads, a realtime count costs $${listPrice('count_realtime')} at the Tier 0 list price and runs only when mode:"realtime" is passed explicitly.`,
     {
       ...COMPANY_FILTERS,
       ...LEGACY_COMPANY_SHAPE,
