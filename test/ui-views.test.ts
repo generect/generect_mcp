@@ -277,4 +277,9 @@ test('helpers', () => {
     'b',
     '11-50',
   ]);
+  // Seen in Claude on 16.10: a count by company HQ showed no location chip.
+  assert.deepEqual(filterChips({ job_titles: ['CTO'], company_locations: ['Berlin, Germany'] }), [
+    'CTO',
+    'Berlin, Germany',
+  ]);
 });
