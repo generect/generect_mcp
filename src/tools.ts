@@ -151,8 +151,9 @@ function createRegistrar(server: McpServer): Registrar {
           name,
           {
             // v2 takes Standard Schema objects; raw shapes are deprecated (and
-            // rejected for outputSchema), so wrap both. z.object strips unknown
-            // keys exactly as v1's internal wrapping did.
+            // rejected for outputSchema), so wrap both. The published JSON Schema
+            // has additionalProperties: false, and clients reject any result key
+            // the shape does not list — add new keys to TOOL_META too.
             ...(meta
               ? { title: meta.title, annotations: meta.annotations, outputSchema: z.object(meta.outputSchema) }
               : {}),

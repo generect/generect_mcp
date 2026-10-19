@@ -89,6 +89,11 @@ const SEARCH_OUTPUT: z.ZodRawShape = {
   api_returned_more_than_requested: z.number().optional(),
   note: z.string().optional(),
   spend_guard: z.any().optional(),
+  // Free thin tier (thinFacts in src/tools.ts).
+  detail: z.string().optional(),
+  free_tier: z.any().optional(),
+  thin_note: z.string().optional(),
+  thin_unavailable: z.string().optional(),
 };
 
 const RECORD_OUTPUT: z.ZodRawShape = {
@@ -198,7 +203,15 @@ export const TOOL_META: Record<string, ToolMeta> = {
   resolve_profile: {
     title: 'Resolve an anonymous LinkedIn link',
     annotations: PAID,
-    outputSchema: { ...COMMON, resolved: z.any().optional(), profiles: z.array(z.any()).optional() },
+    outputSchema: {
+      ...COMMON,
+      // one `url`
+      found: z.boolean().optional(),
+      profile: z.any().optional(),
+      // a `profiles` batch
+      resolved: z.any().optional(),
+      profiles: z.array(z.any()).optional(),
+    },
   },
   generate_email: {
     title: 'Find a verified work email',
