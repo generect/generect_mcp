@@ -14,8 +14,10 @@ import { z } from 'zod';
 //                    read-only tools without asking (Claude auto-approves them), so
 //                    every tool that can charge is false and the host asks first.
 //                    The one exception is count_*: free by default; a realtime count
-//                    ($0.02) only runs on an explicit mode:"realtime".
-//   destructiveHint- reserved for calls that can remove something.
+//                    ($0.04 at list price) only runs on an explicit mode:"realtime".
+//   destructiveHint- reserved for calls that can remove something a customer
+//                    depends on or decide where paid data is sent (create_webhook,
+//                    update_webhook, delete_webhook). Claude confirms every one.
 //   idempotentHint - claimed ONLY for free calls. A repeated billable call has a
 //                    very real additional effect: it charges again.
 //   openWorldHint  - true everywhere: this server talks to live external data.
@@ -104,6 +106,16 @@ const RECORD_OUTPUT: z.ZodRawShape = {
   company: z.any().optional(),
 };
 
+/** Changes state on Generect's side but removes nothing. */
+const WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: true } as const;
+/** Removes something a customer's pipeline may depend on, or sends paid data somewhere new. */
+const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, openWorldHint: true } as const;
+const WEBHOOK_OUTPUT: z.ZodRawShape = {
+  ...COMMON,
+  action: z.string().optional(),
+  webhooks: z.any().optional(),
+};
+
 /** Reads data but can charge the balance: not read-only, and not destructive either. */
 const PAID = { readOnlyHint: false, destructiveHint: false, openWorldHint: true } as const;
 const FREE_READ_ONLY = { readOnlyHint: true, idempotentHint: true, openWorldHint: true } as const;
@@ -165,17 +177,16 @@ export const TOOL_META: Record<string, ToolMeta> = {
       ms: z.number().optional(),
     },
   },
-  manage_webhooks: {
-    title: 'Manage webhook endpoints',
-    // The only tool here that changes state on Generect's side, and `delete`
-    // removes a subscription the customer's pipeline may depend on.
-    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
-    outputSchema: {
-      ...COMMON,
-      action: z.string().optional(),
-      webhooks: z.any().optional(),
-    },
-  },
+  // Webhook endpoints: free, one tool per operation. Listing reads; sending a test
+  // event (a sample with no data) writes but removes nothing. Bulk-job completion
+  // events carry the job's results (emails, phones) in their body, so creating a
+  // webhook or changing its URL decides where paid data goes, and deleting one can
+  // cut off a pipeline that depends on it: those three are destructive.
+  list_webhooks: { title: 'List webhooks (free)', annotations: FREE_READ_ONLY, outputSchema: WEBHOOK_OUTPUT },
+  create_webhook: { title: 'Create a webhook (free)', annotations: DESTRUCTIVE, outputSchema: WEBHOOK_OUTPUT },
+  update_webhook: { title: 'Update a webhook (free)', annotations: DESTRUCTIVE, outputSchema: WEBHOOK_OUTPUT },
+  delete_webhook: { title: 'Delete a webhook (free)', annotations: DESTRUCTIVE, outputSchema: WEBHOOK_OUTPUT },
+  test_webhook: { title: 'Send a test webhook event (free)', annotations: WRITE, outputSchema: WEBHOOK_OUTPUT },
 
   // ---- billable ----
   search_leads: {
@@ -272,5 +283,9 @@ export const TOOL_ORDER: readonly string[] = [
   'find_phone',
   'start_bulk_job',
   'get_bulk_job',
-  'manage_webhooks',
+  'list_webhooks',
+  'create_webhook',
+  'update_webhook',
+  'delete_webhook',
+  'test_webhook',
 ];

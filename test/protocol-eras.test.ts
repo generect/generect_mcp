@@ -60,7 +60,7 @@ for (const [era, mode, expected] of [
       assert.equal(negotiated(client), expected);
       const listed = await client.listTools();
       const names = listed.tools.map(t => t.name);
-      assert.equal(names.length, 17);
+      assert.equal(names.length, TOOL_ORDER.length);
       assert.deepEqual(
         names.slice(0, TOOL_ORDER.length),
         TOOL_ORDER.filter(n => names.includes(n)),

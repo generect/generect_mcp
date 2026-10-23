@@ -9,7 +9,16 @@ import { parseAuthHeader } from './auth/parse.js';
 import { toAuthHeader } from './auth/credential.js';
 import { annotate as annotateTestMode, isTestRequest } from './testmode.js';
 import { VERSION } from './version.js';
-import { fetchPriceBook, priceTag, receipt, estimate, round, type Operation, type PriceBook } from './pricing.js';
+import {
+  fetchPriceBook,
+  priceTag,
+  listPrice,
+  receipt,
+  estimate,
+  round,
+  type Operation,
+  type PriceBook,
+} from './pricing.js';
 import { TOOL_META, TOOL_ORDER } from './tool-meta.js';
 import { registerResources } from './resources.js';
 import { registerPrompts } from './prompts.js';
@@ -1112,7 +1121,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'count_leads',
-    `How many leads match an ICP, and what pulling them would cost. ${priceTag('count_database')} ALWAYS CALL THIS BEFORE search_leads: it is the only way to learn the size of an audience without paying per row, and it returns a cost estimate for the next step at this account's real rates. A realtime count is NOT free ($0.02 flat) — this tool refuses to run one unless you pass mode:"realtime" on purpose.`,
+    `How many leads match an ICP, and what pulling them would cost at this account's prices. ${priceTag('count_database')} It is the only way to size an audience without paying per row, which makes it the first step before search_leads. A realtime count is not free ($${listPrice('count_realtime')} flat at the Tier 0 list price); it runs only when mode:"realtime" is passed explicitly.`,
     {
       ...LEAD_FILTERS,
       ...LEGACY_LEAD_SHAPE,
@@ -1179,7 +1188,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           });
         }
 
-        // Free path. If the filters cannot run here, DON'T silently spend $0.02
+        // Free path. If the filters cannot run here, DON'T silently spend $0.04
         // on a live count — say what it would take and let the caller decide.
         try {
           const data = await callApi(
@@ -1232,7 +1241,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'count_companies',
-    `How many companies match an ICP, and what pulling them would cost. ${priceTag('count_database')} Call this before search_companies. As with count_leads, a realtime count costs $0.02 and is never run implicitly.`,
+    `How many companies match an ICP, and what pulling them would cost. ${priceTag('count_database')} The first step before search_companies. As with count_leads, a realtime count costs $${listPrice('count_realtime')} at the Tier 0 list price and runs only when mode:"realtime" is passed explicitly.`,
     {
       ...COMPANY_FILTERS,
       ...LEGACY_COMPANY_SHAPE,
@@ -1315,7 +1324,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'get_balance',
-    `Account balance, month-to-date usage and THIS account's real per-operation prices. ${priceTag('count_database')} balance_usd is the wallet; grants_usd is bonus and plan credit (sign-up bonus, perks, plan allowance), reported apart. Grants are spent first, but only on the operations each one covers: a promo perk or a plan allowance may not pay for API calls, and a perk never pays for phone numbers. Report both figures; do not add them up as what the user can spend. Call it before a batch of paid work (so you can tell the user what they can afford) and after (so you can report exactly what was spent). The prices it returns beat any number in a tool description — those are list prices.`,
+    `Account balance, month-to-date usage and this account's own per-operation prices. ${priceTag('count_database')} balance_usd is the wallet; grants_usd is bonus and plan credit (sign-up bonus, perks, plan allowance), reported apart. Grants are spent first, but only on the operations each one covers: a promo perk or a plan allowance may not pay for API calls, and a perk never pays for phone numbers, so the two figures do not add up to what the account can spend. Useful before a batch of paid work (what the user can afford) and after it (what was spent). These are the account's real rates; prices in tool descriptions are list prices.`,
     {
       include_transactions: z
         .number()
@@ -1401,7 +1410,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'search_leads',
-    `Return leads (people) matching an ICP. FREE by default while the account has free thin rows left today (daily quota; see detail — pass detail "thin" to guarantee $0). detail "full" is ${priceTag('search_database').replace(/^BILLABLE — /, 'billable, ')} Realtime, or an auto escalation to it, is billed per row too. Run count_leads first — it is free and sizes the audience. Rows never include email or phone: call generate_email (it takes the lead id) or find_phone only on the ids you keep. Ordering is not stable, so paginate by passing ids you already have in exclude_ids rather than by offset.`,
+    `Return leads (people) matching an ICP. Free by default while the account has free thin rows left today (a daily quota; detail "thin" guarantees $0). detail "full" is ${priceTag('search_database').replace(/^Billable: /, 'billable: ')} Realtime, and an automatic escalation to it, are billed per row too. count_leads sizes the audience for free first. Rows never include email or phone; generate_email (which takes the lead id) and find_phone add those for the ids you keep. Ordering is not stable, so pages are fetched by passing the ids you already have in exclude_ids rather than by offset.`,
     {
       ...LEAD_FILTERS,
       ...LEGACY_LEAD_SHAPE,
@@ -1494,7 +1503,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'search_companies',
-    `Return companies matching an ICP. FREE by default while the account has free thin rows left today (daily quota; see detail — pass detail "thin" to guarantee $0); thin rows carry no domain — use enrich_company on the ones you keep. detail "full" is ${priceTag('search_database').replace(/^BILLABLE — /, 'billable, ')} Realtime is billed per row too. Run count_companies first. Note that headcount_range is a snapshot taken when the record was indexed and can lag the company's current size; the filter itself is applied at query time.`,
+    `Return companies matching an ICP. Free by default while the account has free thin rows left today (a daily quota; detail "thin" guarantees $0). Thin rows carry no domain; enrich_company adds it for the ones you keep. detail "full" is ${priceTag('search_database').replace(/^Billable: /, 'billable: ')} Realtime is billed per row too. count_companies sizes the result for free first. headcount_range is a snapshot taken when the record was indexed and can lag the company's current size; the filter itself is applied at query time.`,
     {
       ...COMPANY_FILTERS,
       ...LEGACY_COMPANY_SHAPE,
@@ -1572,7 +1581,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'preview_leads',
-    `Cheap look at the actual people behind a count, before committing to a full search. ${priceTag('preview')} Preview rows carry a Generect \`id\`, so the intended flow is: preview many → pick the few that fit → enrich_lead / generate_email only on those. Per the API contract preview rows are masked (no LinkedIn URL, domain, email or phone); if your account returns more than that, treat it as a bonus and not something to rely on.`,
+    `A cheap look at the actual people behind a count, before a full search. ${priceTag('preview')} Preview rows carry a Generect \`id\`, so the usual flow is: preview many, pick the few that fit, then enrich_lead or generate_email only on those. By the API contract preview rows are masked (no LinkedIn URL, domain, email or phone); an account that gets more than that cannot rely on it.`,
     {
       ...LEAD_FILTERS,
       ...LEGACY_LEAD_SHAPE,
@@ -1668,7 +1677,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'enrich_lead',
-    `Full profile for ONE known person, by Generect id, LinkedIn URL, or work email (reverse lookup). ${priceTag('enrich_database')} Not found costs nothing. Prefer the \`id\` from a search/preview result — it is the most accurate identifier. For many people at once use start_bulk_job.`,
+    `Full profile for one known person, by Generect id, LinkedIn URL or work email (reverse lookup). ${priceTag('enrich_database')} Not found costs nothing. The \`id\` from a search or preview result is the most accurate identifier. start_bulk_job handles many people at once.`,
     {
       id: z.string().describe('Generect lead id from search/preview.').optional(),
       linkedin_url: z.string().describe('LinkedIn profile URL.').optional(),
@@ -1711,7 +1720,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'enrich_company',
-    `Full profile for ONE known company, by Generect id, LinkedIn URL, domain, or name. ${priceTag('enrich_database')} Not found costs nothing. Domain is the most reliable identifier after id; name matching is fuzzy.`,
+    `Full profile for one known company, by Generect id, LinkedIn URL, domain or name. ${priceTag('enrich_database')} Not found costs nothing. Domain is the most reliable identifier after id; name matching is fuzzy.`,
     {
       id: z.string().describe('Generect company id.').optional(),
       linkedin_url: z.string().describe('LinkedIn company page URL.').optional(),
@@ -1755,7 +1764,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'get_lead_by_url',
-    `Alias of enrich_lead for a LinkedIn profile URL, kept for backwards compatibility. ${priceTag('enrich_database')} Prefer enrich_lead — it also accepts a Generect id (cheaper to get right) or an email for reverse lookup.`,
+    `Alias of enrich_lead for a LinkedIn profile URL, kept for backwards compatibility. ${priceTag('enrich_database')} enrich_lead does the same and also accepts a Generect id (the most accurate identifier) or an email for reverse lookup.`,
     {
       url: z.string().describe('LinkedIn profile URL (e.g. https://www.linkedin.com/in/username/).'),
       ...LEGACY_ENRICH_SHAPE,
@@ -1793,7 +1802,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'resolve_profile',
-    `Reveal who is behind an anonymous LinkedIn profile link. ${priceTag('profile_resolve')} Takes the obfuscated links that Sales Navigator leaves in exports, CRMs and ad platforms — \`linkedin.com/in/ACwAA…\` — plus Sales Navigator lead URLs, bare profile ids and urns, and returns the real profile URL and identity. Pass \`profiles\` (up to 50) to do a batch in one call. The \`id\` it returns is the same identifier enrich_lead, generate_email and find_phone accept, so this is the cheap first step before spending on a full record. Returns identity only — no location, company or work history; use enrich_lead for those. The numeric member id is NOT accepted as input (LinkedIn answers 403 to it); it comes back as \`linkedin_id\`.`,
+    `Reveal who is behind an anonymous LinkedIn profile link. ${priceTag('profile_resolve')} Takes the obfuscated links that Sales Navigator leaves in exports, CRMs and ad platforms (\`linkedin.com/in/ACwAA…\`), plus Sales Navigator lead URLs, bare profile ids and urns, and returns the real profile URL and identity. \`profiles\` (up to 50) resolves a batch in one call. The \`id\` it returns is the identifier enrich_lead, generate_email and find_phone accept, so this is the cheap first step before a full record. Returns identity only (no location, company or work history; enrich_lead has those). The numeric member id is not accepted as input (LinkedIn answers 403 to it); it comes back as \`linkedin_id\`.`,
     {
       url: z
         .string()
@@ -1869,7 +1878,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'generate_email',
-    `Find and verify a work email. ${priceTag('email_find')} Identify the person by lead_id (best), LinkedIn URL, or first+last+domain. \`candidates\` resolves several people in one call; more than 10 is routed to an async bulk job instead, which returns a job_id for get_bulk_job.`,
+    `Find and verify a work email. ${priceTag('email_find')} Identifies the person by lead_id (most accurate), LinkedIn URL or first name, last name and domain. \`candidates\` resolves several people in one call; more than 10 go to an async bulk job instead, which returns a job_id for get_bulk_job.`,
     {
       ...IDENTIFY_LEAD,
       middle_name: z.string().describe('Middle name (optional, improves pattern matching).').optional(),
@@ -1954,7 +1963,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'validate_email',
-    `Check deliverability of emails you already have. ${priceTag('email_validate')} This is the one operation where EVERY submitted address is billed — the verdict is the deliverable. Never validate an address that generate_email just returned as valid; it is already verified.`,
+    `Check deliverability of emails you already have. ${priceTag('email_validate')} This is the one operation where every submitted address is billed: the verdict is the deliverable. An address generate_email returned as valid is already verified, so validating it again only adds cost.`,
     {
       emails: z.array(z.string()).describe('Email addresses to validate. Each one is billed.'),
       timeout_ms: PAGING.timeout_ms,
@@ -1986,7 +1995,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'find_phone',
-    `Find a phone number for one person. ${priceTag('phone_find')} THE MOST EXPENSIVE OPERATION HERE — roughly 20x an email lookup. Do not call it speculatively or across a list; confirm with the user first, and only for people they have already qualified. Use start_bulk_job for an approved list.`,
+    `Find a phone number for one person. ${priceTag('phone_find')} The most expensive operation here, roughly 20x an email lookup, so it suits people the user has already qualified rather than a whole list. start_bulk_job takes an approved list.`,
     {
       ...IDENTIFY_LEAD,
       company: z.string().describe('Company name or domain (name+company mode).').optional(),
@@ -2041,7 +2050,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'start_bulk_job',
-    'Submit up to 50 records for asynchronous processing and get a job_id back. BILLABLE at the same per-record rate as the single-record tool — and the whole cost is RESERVED at submit time, so a submitted job keeps running (and keeps charging) even if you stop polling. Only submit a list the user has approved. Poll with get_bulk_job, or register a webhook to be told when it finishes.',
+    'Submit up to 50 records for asynchronous processing and get a job_id back. Billable at the same per-record rate as the single-record tool, and the whole cost is reserved at submit time: a submitted job keeps running (and charging) even if nobody polls it. Meant for a list the user has approved. get_bulk_job polls it, and a webhook (create_webhook) reports when it finishes.',
     {
       job_type: z
         .enum(['email_find', 'phone_find', 'enrich_leads', 'enrich_companies'])
@@ -2115,7 +2124,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'get_bulk_job',
-    `Status and results of a bulk job. ${priceTag('count_database')} Polling is free — the work was already billed at submit time. Poll every few seconds, not in a tight loop.`,
+    `Status and results of a bulk job. ${priceTag('count_database')} Polling is free (the work was billed at submit time); a few seconds between polls is enough.`,
     {
       job_type: z
         .enum(['email_find', 'phone_find', 'enrich_leads', 'enrich_companies'])
@@ -2148,111 +2157,175 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
     },
   );
 
-  // 16. manage_webhooks
+  // 16. webhooks: one tool per operation. The Claude directory rejects a tool
+  // that mixes reads and writes, and a host can only ask before the writes if
+  // they are separate tools with their own annotations (src/tool-meta.ts).
+  const WEBHOOK_EVENTS = z.enum([
+    'email.find.bulk.completed',
+    'phone.find.bulk.completed',
+    'enrich.lead.bulk.completed',
+    'enrich.company.bulk.completed',
+  ]);
+  type WebhookAction = 'list' | 'create' | 'update' | 'delete' | 'test';
+  const webhookCall = async (action: WebhookAction, args: any, extra: any) => {
+    try {
+      const Authorization = await resolveAuthHeader(extra);
+      const headers = apiHeaders(Authorization);
+      const base = `${apiBase}${V1}/webhooks/`;
+      if (action !== 'list' && action !== 'create' && !args?.id) {
+        throw Object.assign(new Error(`${action}_webhook requires id.`), { status: 400 });
+      }
+      let data: any;
+      switch (action) {
+        case 'list':
+          data = await callApi(fetcher, base, { method: 'GET', headers }, timeoutOf(args));
+          break;
+        case 'create':
+          if (!args?.url || !args?.events?.length) {
+            throw Object.assign(new Error('create_webhook requires url and events.'), { status: 400 });
+          }
+          data = await callApi(
+            fetcher,
+            base,
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                url: args.url,
+                events: args.events,
+                ...(args.secret ? { secret: args.secret } : {}),
+              }),
+            },
+            timeoutOf(args),
+          );
+          break;
+        case 'update': {
+          // The API refuses an empty event list (allow_empty=False); stop it here.
+          if (Array.isArray(args.events) && args.events.length === 0) {
+            throw Object.assign(
+              new Error(
+                'update_webhook: events cannot be empty. delete_webhook removes a webhook that should get none.',
+              ),
+              { status: 400 },
+            );
+          }
+          const patch = {
+            ...(args.url ? { url: args.url } : {}),
+            ...(args.events ? { events: args.events } : {}),
+            ...(args.secret ? { secret: args.secret } : {}),
+          };
+          if (Object.keys(patch).length === 0) {
+            throw Object.assign(new Error('update_webhook needs at least one of url, events, secret.'), {
+              status: 400,
+            });
+          }
+          data = await callApi(
+            fetcher,
+            `${base}${encodeURIComponent(args.id)}/`,
+            { method: 'PATCH', headers, body: JSON.stringify(patch) },
+            timeoutOf(args),
+          );
+          break;
+        }
+        case 'delete':
+          data = await callApi(
+            fetcher,
+            `${base}${encodeURIComponent(args.id)}/`,
+            { method: 'DELETE', headers },
+            timeoutOf(args),
+          );
+          break;
+        case 'test':
+          data = await callApi(
+            fetcher,
+            `${base}${encodeURIComponent(args.id)}/test/`,
+            { method: 'POST', headers, body: '{}' },
+            timeoutOf(args),
+          );
+          break;
+      }
+      return result({
+        action,
+        webhooks: data?.data ?? data ?? null,
+        cost: { operation: 'webhooks', amount_charged_usd: 0, billed: 'free endpoint' },
+      });
+    } catch (err: unknown) {
+      return apiError(err);
+    }
+  };
+  const WEBHOOK_FREE = priceTag('count_database');
+
   loggedTool(
     registrar,
-    'manage_webhooks',
-    `List, create, update, delete or test webhook endpoints for bulk-job completion. ${priceTag('count_database')} Use this instead of long polling in scheduled/unattended workflows: register once, then let the completion event wake your job up.`,
+    'list_webhooks',
+    `List the webhook endpoints registered for bulk-job completion events. ${WEBHOOK_FREE}`,
+    { timeout_ms: PAGING.timeout_ms },
+    (args, extra) => webhookCall('list', args, extra),
+  );
+
+  loggedTool(
+    registrar,
+    'create_webhook',
+    `Register a URL that receives bulk-job completion events, so scheduled or unattended workflows are notified instead of polling. Each event carries the job's results (emails, phone numbers or records) in its body. ${WEBHOOK_FREE}`,
     {
-      action: z.enum(['list', 'create', 'update', 'delete', 'test']).describe('What to do.'),
-      id: z.string().describe('Webhook id (required for update, delete, test).').optional(),
-      url: z.string().describe('HTTPS endpoint that receives events (create/update).').optional(),
-      events: z
-        .array(
-          z.enum([
-            'email.find.bulk.completed',
-            'phone.find.bulk.completed',
-            'enrich.lead.bulk.completed',
-            'enrich.company.bulk.completed',
-          ]),
-        )
-        .describe('Events to subscribe to (create/update).')
-        .optional(),
+      url: z
+        .string()
+        .describe(
+          'URL that receives the events, http or https. The API refuses a host that resolves to a private or internal address.',
+        ),
+      events: z.array(WEBHOOK_EVENTS).min(1).describe('Events to subscribe to.'),
       secret: z.string().describe('Shared secret for HMAC signature verification.').optional(),
       timeout_ms: PAGING.timeout_ms,
     },
-    async (args, extra) => {
-      try {
-        const Authorization = await resolveAuthHeader(extra);
-        const headers = apiHeaders(Authorization);
-        const base = `${apiBase}${V1}/webhooks/`;
-        const needsId = ['update', 'delete', 'test'];
-        if (needsId.includes(args.action) && !args.id) {
-          throw Object.assign(new Error(`action "${args.action}" requires id.`), { status: 400 });
-        }
-        let data: any;
-        switch (args.action) {
-          case 'list':
-            data = await callApi(fetcher, base, { method: 'GET', headers }, timeoutOf(args));
-            break;
-          case 'create':
-            if (!args.url || !args.events?.length) {
-              throw Object.assign(new Error('create requires url and events.'), { status: 400 });
-            }
-            data = await callApi(
-              fetcher,
-              base,
-              {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
-                  url: args.url,
-                  events: args.events,
-                  ...(args.secret ? { secret: args.secret } : {}),
-                }),
-              },
-              timeoutOf(args),
-            );
-            break;
-          case 'update':
-            data = await callApi(
-              fetcher,
-              `${base}${encodeURIComponent(args.id)}/`,
-              {
-                method: 'PATCH',
-                headers,
-                body: JSON.stringify({
-                  ...(args.url ? { url: args.url } : {}),
-                  ...(args.events ? { events: args.events } : {}),
-                  ...(args.secret ? { secret: args.secret } : {}),
-                }),
-              },
-              timeoutOf(args),
-            );
-            break;
-          case 'delete':
-            data = await callApi(
-              fetcher,
-              `${base}${encodeURIComponent(args.id)}/`,
-              { method: 'DELETE', headers },
-              timeoutOf(args),
-            );
-            break;
-          case 'test':
-            data = await callApi(
-              fetcher,
-              `${base}${encodeURIComponent(args.id)}/test/`,
-              { method: 'POST', headers, body: '{}' },
-              timeoutOf(args),
-            );
-            break;
-        }
-        return result({
-          action: args.action,
-          webhooks: data?.data ?? data ?? null,
-          cost: { operation: 'webhooks', amount_charged_usd: 0, billed: 'free endpoint' },
-        });
-      } catch (err: unknown) {
-        return apiError(err);
-      }
+    (args, extra) => webhookCall('create', args, extra),
+  );
+
+  loggedTool(
+    registrar,
+    'update_webhook',
+    `Change the URL, events or signing secret of a registered webhook. ${WEBHOOK_FREE} A new URL changes where completion events, and the results they carry, are delivered; a new event list changes which events are sent.`,
+    {
+      id: z.string().describe('Webhook id, from list_webhooks.'),
+      url: z
+        .string()
+        .describe(
+          'New URL for the events, http or https. The API refuses a host that resolves to a private or internal address.',
+        )
+        .optional(),
+      events: z.array(WEBHOOK_EVENTS).min(1).describe('New list of events, at least one.').optional(),
+      secret: z.string().describe('New shared secret for HMAC signature verification.').optional(),
+      timeout_ms: PAGING.timeout_ms,
     },
+    (args, extra) => webhookCall('update', args, extra),
+  );
+
+  loggedTool(
+    registrar,
+    'delete_webhook',
+    `Delete a registered webhook; its endpoint stops receiving completion events. ${WEBHOOK_FREE}`,
+    {
+      id: z.string().describe('Webhook id, from list_webhooks.'),
+      timeout_ms: PAGING.timeout_ms,
+    },
+    (args, extra) => webhookCall('delete', args, extra),
+  );
+
+  loggedTool(
+    registrar,
+    'test_webhook',
+    `Send a test event to a registered webhook endpoint. ${WEBHOOK_FREE}`,
+    {
+      id: z.string().describe('Webhook id, from list_webhooks.'),
+      timeout_ms: PAGING.timeout_ms,
+    },
+    (args, extra) => webhookCall('test', args, extra),
   );
 
   // 17. health
   loggedTool(
     registrar,
     'health',
-    `Liveness check. ${priceTag('count_database')} Confirms the MCP server is up, reports its version, and (unless you disable it) verifies the credential against a free account endpoint. It never touches a paid data endpoint, so it is safe to call from a monitor.`,
+    `Liveness check. ${priceTag('count_database')} Confirms the MCP server is up, reports its version and (unless disabled) verifies the credential against a free account endpoint. It never touches a paid data endpoint, so it is safe for monitors.`,
     {
       check_credential: z
         .boolean()
