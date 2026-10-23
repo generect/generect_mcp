@@ -512,6 +512,10 @@ test('webhooks: one tool per operation, each hitting its own method and path', a
   assert.equal((await tools.create_webhook({ url: 'https://x.test/hook' }, EXTRA)).isError, true);
   assert.equal((await tools.delete_webhook({}, EXTRA)).isError, true);
   assert.equal((await tools.update_webhook({ id: 'wh_1' }, EXTRA)).isError, true, 'an empty update is refused');
+  // The API refuses an empty event list (allow_empty=False), so it is never sent.
+  const noEvents = await tools.update_webhook({ id: 'wh_1', events: [] }, EXTRA);
+  assert.equal(noEvents.isError, true, 'an empty event list is refused');
+  assert.match(String(out(noEvents).error), /events/);
   assert.equal(calls.filter(c => /webhooks/.test(c.url)).length, 0);
 
   const expect: Array<[string, any, string, RegExp, any]> = [
@@ -972,8 +976,11 @@ test('every tool that can charge asks first; only webhook management is destruct
     // The directory needs an explicit hint either way.
     assert.equal(typeof (a.readOnlyHint === false ? a.destructiveHint : a.readOnlyHint), 'boolean', `${n} hint`);
   }
+  // Bulk-job completion events carry the results (emails, phones) in their body,
+  // so creating or redirecting a webhook decides where paid data is sent: Claude
+  // confirms every such call. Only the test event (no data) stays a plain write.
   const destructive = TOOL_ORDER.filter(n => TOOL_META[n].annotations.destructiveHint === true);
-  assert.deepEqual(destructive, ['update_webhook', 'delete_webhook']);
+  assert.deepEqual(destructive, ['create_webhook', 'update_webhook', 'delete_webhook']);
 });
 
 test('idempotency is only claimed for tools that cannot charge', () => {
@@ -1521,5 +1528,24 @@ test('list prices are the backend base prices, and descriptions quote them', asy
   }
   for (const [name, d] of Object.entries(descriptions)) {
     assert.ok(!/\$0\.0067/.test(d), `${name} still quotes the old cached price`);
+  }
+});
+
+test('webhook input schemas accept what the API accepts, and say so', async () => {
+  // The API (webhooks/v1/serializers.py) takes an http or https URL whose host is
+  // public, and refuses an empty event list. The schemas and the text must agree.
+  const configs: Record<string, any> = {};
+  const server: any = { registerTool: (name: string, config: any) => (configs[name] = config) };
+  registerTools(server, (async () => new Response('{}')) as any, 'https://api.test', '');
+  const EVENT = ['email.find.bulk.completed'];
+  const ok = (name: string, args: any) => configs[name].inputSchema.safeParse(args).success;
+  assert.equal(ok('update_webhook', { id: 'wh_1', events: [] }), false, 'an empty event list is refused');
+  assert.equal(ok('update_webhook', { id: 'wh_1', events: EVENT }), true);
+  assert.equal(ok('create_webhook', { url: 'https://x.test/hook', events: [] }), false);
+  assert.equal(ok('create_webhook', { url: 'http://x.test/hook', events: EVENT }), true, 'http is accepted');
+  for (const name of ['create_webhook', 'update_webhook']) {
+    const url = z.toJSONSchema(configs[name].inputSchema).properties.url as any;
+    assert.match(url.description, /http or https/, `${name} url says which schemes work`);
+    assert.doesNotMatch(configs[name].description, /HTTPS/, `${name} does not claim HTTPS only`);
   }
 });

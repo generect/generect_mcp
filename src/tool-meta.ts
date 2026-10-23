@@ -15,8 +15,9 @@ import { z } from 'zod';
 //                    every tool that can charge is false and the host asks first.
 //                    The one exception is count_*: free by default; a realtime count
 //                    ($0.04 at list price) only runs on an explicit mode:"realtime".
-//   destructiveHint- reserved for calls that can remove or redirect something a
-//                    customer depends on (update_webhook, delete_webhook).
+//   destructiveHint- reserved for calls that can remove something a customer
+//                    depends on or decide where paid data is sent (create_webhook,
+//                    update_webhook, delete_webhook). Claude confirms every one.
 //   idempotentHint - claimed ONLY for free calls. A repeated billable call has a
 //                    very real additional effect: it charges again.
 //   openWorldHint  - true everywhere: this server talks to live external data.
@@ -107,7 +108,7 @@ const RECORD_OUTPUT: z.ZodRawShape = {
 
 /** Changes state on Generect's side but removes nothing. */
 const WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: true } as const;
-/** Changes or removes something a customer's pipeline may depend on. */
+/** Removes something a customer's pipeline may depend on, or sends paid data somewhere new. */
 const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, openWorldHint: true } as const;
 const WEBHOOK_OUTPUT: z.ZodRawShape = {
   ...COMMON,
@@ -176,11 +177,13 @@ export const TOOL_META: Record<string, ToolMeta> = {
       ms: z.number().optional(),
     },
   },
-  // Webhook endpoints: free, one tool per operation. Listing reads; creating and
-  // sending a test event write but remove nothing; updating and deleting can cut
-  // off a pipeline that depends on the subscription, so they are destructive.
+  // Webhook endpoints: free, one tool per operation. Listing reads; sending a test
+  // event (a sample with no data) writes but removes nothing. Bulk-job completion
+  // events carry the job's results (emails, phones) in their body, so creating a
+  // webhook or changing its URL decides where paid data goes, and deleting one can
+  // cut off a pipeline that depends on it: those three are destructive.
   list_webhooks: { title: 'List webhooks (free)', annotations: FREE_READ_ONLY, outputSchema: WEBHOOK_OUTPUT },
-  create_webhook: { title: 'Create a webhook (free)', annotations: WRITE, outputSchema: WEBHOOK_OUTPUT },
+  create_webhook: { title: 'Create a webhook (free)', annotations: DESTRUCTIVE, outputSchema: WEBHOOK_OUTPUT },
   update_webhook: { title: 'Update a webhook (free)', annotations: DESTRUCTIVE, outputSchema: WEBHOOK_OUTPUT },
   delete_webhook: { title: 'Delete a webhook (free)', annotations: DESTRUCTIVE, outputSchema: WEBHOOK_OUTPUT },
   test_webhook: { title: 'Send a test webhook event (free)', annotations: WRITE, outputSchema: WEBHOOK_OUTPUT },

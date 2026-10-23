@@ -2200,6 +2200,15 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           );
           break;
         case 'update': {
+          // The API refuses an empty event list (allow_empty=False); stop it here.
+          if (Array.isArray(args.events) && args.events.length === 0) {
+            throw Object.assign(
+              new Error(
+                'update_webhook: events cannot be empty. delete_webhook removes a webhook that should get none.',
+              ),
+              { status: 400 },
+            );
+          }
           const patch = {
             ...(args.url ? { url: args.url } : {}),
             ...(args.events ? { events: args.events } : {}),
@@ -2257,9 +2266,13 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'create_webhook',
-    `Register an HTTPS endpoint that receives bulk-job completion events, so scheduled or unattended workflows are notified instead of polling. ${WEBHOOK_FREE}`,
+    `Register a URL that receives bulk-job completion events, so scheduled or unattended workflows are notified instead of polling. Each event carries the job's results (emails, phone numbers or records) in its body. ${WEBHOOK_FREE}`,
     {
-      url: z.string().describe('HTTPS endpoint that receives the events.'),
+      url: z
+        .string()
+        .describe(
+          'URL that receives the events, http or https. The API refuses a host that resolves to a private or internal address.',
+        ),
       events: z.array(WEBHOOK_EVENTS).min(1).describe('Events to subscribe to.'),
       secret: z.string().describe('Shared secret for HMAC signature verification.').optional(),
       timeout_ms: PAGING.timeout_ms,
@@ -2270,11 +2283,16 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'update_webhook',
-    `Change the URL, events or signing secret of a registered webhook. ${WEBHOOK_FREE} A new URL or event list changes where completion events are delivered.`,
+    `Change the URL, events or signing secret of a registered webhook. ${WEBHOOK_FREE} A new URL changes where completion events, and the results they carry, are delivered; a new event list changes which events are sent.`,
     {
       id: z.string().describe('Webhook id, from list_webhooks.'),
-      url: z.string().describe('New HTTPS endpoint.').optional(),
-      events: z.array(WEBHOOK_EVENTS).describe('New list of events.').optional(),
+      url: z
+        .string()
+        .describe(
+          'New URL for the events, http or https. The API refuses a host that resolves to a private or internal address.',
+        )
+        .optional(),
+      events: z.array(WEBHOOK_EVENTS).min(1).describe('New list of events, at least one.').optional(),
       secret: z.string().describe('New shared secret for HMAC signature verification.').optional(),
       timeout_ms: PAGING.timeout_ms,
     },
