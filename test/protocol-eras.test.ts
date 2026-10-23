@@ -16,17 +16,19 @@ import { TOOL_ORDER } from '../src/tool-meta.ts';
 
 type Seen = { url: string; authorization: string | null };
 
-function setup() {
+function setup(answer?: (url: string, body: any) => unknown) {
   resetPriceBookCache();
   const seen: Seen[] = [];
   const api = (async (url: string, init: any = {}) => {
     const headers = new Headers(init.headers ?? {});
     seen.push({ url: String(url), authorization: headers.get('authorization') });
-    const body = /tiers\/my-tier/.test(String(url))
-      ? { current_tier: { name: '3', service_prices: { api_cached: 0.01, api_realtime: 0.04 } } }
-      : /search\/realtime\/leads\//.test(String(url))
-        ? { data: { leads: [], results_count: 0 }, meta: { amount_charged: 0 } }
-        : { data: { results_count: 321 }, meta: { amount_charged: 0 } };
+    const body =
+      answer?.(String(url), init.body ? JSON.parse(init.body) : null) ??
+      (/tiers\/my-tier/.test(String(url))
+        ? { current_tier: { name: '3', service_prices: { api_cached: 0.01, api_realtime: 0.04 } } }
+        : /search\/realtime\/leads\//.test(String(url))
+          ? { data: { leads: [], results_count: 0 }, meta: { amount_charged: 0 } }
+          : { data: { results_count: 321 }, meta: { amount_charged: 0 } });
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
   const handler = createMcpHandler(() => createMcpServer(api, 'https://api.test', ''));
@@ -122,6 +124,52 @@ for (const [era, mode] of [
       assert.match(got.messages[0].content.text, /CTOs in Berlin/);
       const noArgs: any = await client.getPrompt({ name: 'spend_report' });
       assert.ok(noArgs.messages.length >= 1, 'a prompt without arguments renders without them');
+    } finally {
+      await client.close();
+      await handler.close();
+    }
+  });
+}
+
+// PRO-1717: the client validates structuredContent against the published output
+// schema (additionalProperties: false). The default search is thin, and its extra
+// fields (detail, free_tier, thin_note) failed that check for every account.
+const FREE_TIER = { detail: 'thin', daily_rows: 2000, rows_used_today: 2, rows_left_today: 1998 };
+const thinSearch = (url: string, body: any) =>
+  /search\/database\/leads\/$/.test(url) && body?.detail === 'thin'
+    ? {
+        data: { leads: [{ id: 'ACwAAT1', full_name: 'Ada Byron' }], results_count: 1 },
+        meta: { amount_charged: 0, free_tier: FREE_TIER },
+      }
+    : /search\/database\/companies\/$/.test(url) && body?.detail === 'thin'
+      ? {
+          data: { companies: [{ id: '9', name: 'Analytical' }], results_count: 1 },
+          meta: { amount_charged: 0, free_tier: FREE_TIER },
+        }
+      : undefined;
+
+for (const [era, mode] of [
+  ['2026-07-28', { pin: '2026-07-28' }],
+  ['2025-11-25', 'legacy'],
+] as const) {
+  test(`protocol ${era}: a default (thin) search returns rows, not an output-schema error`, async () => {
+    const { handler } = setup(thinSearch);
+    const client = await connect(handler, mode as any, 'k');
+    try {
+      await client.listTools(); // as every host does: this is where the client learns the output schemas
+      for (const [name, args, rows] of [
+        ['search_leads', { job_titles: ['CEO'] }, 'leads'],
+        ['search_leads', { job_titles: ['CEO'], detail: 'thin' }, 'leads'],
+        ['search_companies', { industries: ['Security and Investigations'], limit: 2 }, 'companies'],
+        ['search_companies', { industries: ['Security and Investigations'], detail: 'thin' }, 'companies'],
+      ] as const) {
+        const r: any = await client.callTool({ name, arguments: args });
+        assert.notEqual(r.isError, true, `${name} ${JSON.stringify(args)}: ${JSON.stringify(r.content)}`);
+        assert.equal(r.structuredContent.detail, 'thin');
+        assert.equal(r.structuredContent.cost.amount_charged_usd, 0);
+        assert.deepEqual(r.structuredContent.free_tier, FREE_TIER);
+        assert.equal(r.structuredContent[rows].length, 1);
+      }
     } finally {
       await client.close();
       await handler.close();

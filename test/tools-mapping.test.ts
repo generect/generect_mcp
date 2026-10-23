@@ -425,6 +425,51 @@ test('get_balance: returns balance plus the account-specific price book', async 
   assert.match(r.prices_source, /account tier 3/);
 });
 
+test('get_balance: the wallet to the cent, grants beside it (PRO-1749)', async () => {
+  // A sign-up bonus account: the whole-dollar wallet read $0 and the grant was nowhere.
+  const { tools } = harness([
+    TIER_ROUTE,
+    {
+      match: /accounts\/me/,
+      body: {
+        data: {
+          email: 'a@b.com',
+          credits: { balance: 0, used_this_month: 0, wallet_usd: 0.25, perk_usd: 5, plan_usd: 1.5 },
+        },
+      },
+    },
+  ]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  assert.equal(r.balance_usd, 0.25);
+  assert.equal(r.grants_usd, 6.5);
+});
+
+test('get_balance: an API without the split still reports its balance', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /accounts\/me/, body: { data: { email: 'a@b.com', credits: { balance: 7 } } } },
+  ]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  assert.equal(r.balance_usd, 7);
+  assert.equal(r.grants_usd, null);
+});
+
+test('health: reports the wallet to the cent, grants not added in', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    {
+      match: /accounts\/me/,
+      body: {
+        data: {
+          email: 'a@b.com',
+          credits: { balance: 3, wallet_usd: 3.5, perk_usd: 1.5, plan_usd: 2 },
+        },
+      },
+    },
+  ]);
+  assert.equal(out(await tools.health({}, EXTRA)).balance_usd, 3.5);
+});
+
 test('start_bulk_job: caps at 50, reserves a worst case, and points at the poll tool', async () => {
   const { tools, calls } = harness([
     TIER_ROUTE,
@@ -1003,7 +1048,8 @@ test("every successful payload validates against the tool's own output schema", 
     assert.ok(ARGS[name], `no probe args for ${name}`);
     const res: any = await tools[name](ARGS[name], EXTRA);
     if (res?.isError) continue; // the SDK skips validation on error results
-    const schema = z.object(TOOL_META[name].outputSchema);
+    // Strict, as clients see it: the published JSON Schema has additionalProperties: false.
+    const schema = z.strictObject(TOOL_META[name].outputSchema);
     const parsed = schema.safeParse(res.structuredContent);
     assert.ok(
       parsed.success,
@@ -1350,6 +1396,62 @@ test('search_companies: thin by default; compact location is built from the HQ f
   assert.equal(r.companies[0].location, 'London, United Kingdom');
   assert.equal(r.companies[0].domain, null);
   assert.equal(r.cost.operation, 'search_thin');
+});
+
+test('search_leads / search_companies: every thin outcome validates against the strict output schema', async () => {
+  // PRO-1717: thinFacts() added detail/free_tier/thin_note/thin_unavailable that
+  // SEARCH_OUTPUT did not list, and clients reject extra keys — so the DEFAULT
+  // search failed for every account while detail "full" worked.
+  const THIN_COMPANY = { id: '9', name: 'Analytical', hq_country: 'United Kingdom' };
+  const served = { meta: { amount_charged: 0, free_tier: FREE_TIER } };
+  const routesFor = (outcome: 'served' | 'refused') => [
+    TIER_ROUTE,
+    {
+      match: /search\/database\/leads\//,
+      respond: (body: any) =>
+        body?.detail === 'thin' && outcome === 'refused'
+          ? QUOTA_SPENT
+          : {
+              body:
+                body?.detail === 'thin'
+                  ? { ...served, data: { leads: [THIN_LEAD], results_count: 1 } }
+                  : { data: { leads: [LEAD_ROW], results_count: 1 }, meta: { amount_charged: 0.01 } },
+            },
+    },
+    {
+      match: /search\/database\/companies\//,
+      respond: (body: any) =>
+        body?.detail === 'thin' && outcome === 'refused'
+          ? QUOTA_SPENT
+          : {
+              body:
+                body?.detail === 'thin'
+                  ? { ...served, data: { companies: [THIN_COMPANY], results_count: 1 } }
+                  : { data: { companies: [THIN_COMPANY], results_count: 1 }, meta: { amount_charged: 0.01 } },
+            },
+    },
+  ];
+  const CASES: Array<[string, 'served' | 'refused', Record<string, unknown>, string | undefined]> = [
+    ['default, thin served', 'served', {}, 'thin'],
+    ['explicit thin', 'served', { detail: 'thin' }, 'thin'],
+    ['explicit full', 'served', { detail: 'full' }, undefined],
+    ['default, quota spent -> full', 'refused', {}, 'full'],
+  ];
+  for (const tool of ['search_leads', 'search_companies'] as const) {
+    const filters = tool === 'search_leads' ? { job_titles: ['CEO'] } : { industries: ['Software Development'] };
+    for (const [label, outcome, extra, detail] of CASES) {
+      const { tools } = harness(routesFor(outcome) as Route[]);
+      const res: any = await tools[tool]({ ...filters, ...extra }, EXTRA);
+      assert.notEqual(res.isError, true, `${tool} ${label}: ${JSON.stringify(res.structuredContent)}`);
+      assert.equal(res.structuredContent.returned, 1, `${tool} ${label}: rows must come back`);
+      assert.equal(res.structuredContent.detail, detail, `${tool} ${label}: the case must reach its thin branch`);
+      const parsed = z.strictObject(TOOL_META[tool].outputSchema).safeParse(res.structuredContent);
+      assert.ok(
+        parsed.success,
+        `${tool} ${label} does not match its outputSchema: ${JSON.stringify(parsed.success ? {} : parsed.error.issues)}`,
+      );
+    }
+  }
 });
 
 test('count_leads: the next-step estimate mentions the free thin search', async () => {

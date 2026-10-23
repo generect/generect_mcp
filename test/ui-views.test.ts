@@ -283,3 +283,12 @@ test('helpers', () => {
     'Berlin, Germany',
   ]);
 });
+
+test('balance shows grants beside the wallet, not added in (PRO-1749)', () => {
+  const html = balanceView({ balance_usd: 0.25, grants_usd: 5 });
+  assert.match(html, /\$0\.25/);
+  assert.match(html, /Bonus and plan credit/);
+  assert.doesNotMatch(html, /\$5\.25/);
+  assert.doesNotMatch(balanceView({ balance_usd: 12, grants_usd: 0 }), /Bonus and plan credit/);
+  assert.doesNotMatch(balanceView({ balance_usd: 12 }), /Bonus and plan credit/);
+});

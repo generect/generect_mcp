@@ -160,8 +160,9 @@ function createRegistrar(server: McpServer): Registrar {
           name,
           {
             // v2 takes Standard Schema objects; raw shapes are deprecated (and
-            // rejected for outputSchema), so wrap both. z.object strips unknown
-            // keys exactly as v1's internal wrapping did.
+            // rejected for outputSchema), so wrap both. The published JSON Schema
+            // has additionalProperties: false, and clients reject any result key
+            // the shape does not list — add new keys to TOOL_META too.
             ...(meta
               ? { title: meta.title, annotations: meta.annotations, outputSchema: z.object(meta.outputSchema) }
               : {}),
@@ -307,6 +308,21 @@ function apiError(err: any) {
 }
 
 const V1 = '/api/v1';
+
+/** Wallet and grants from an /accounts/me `credits` block, kept apart as the app shows them (PRO-1749). */
+export function balanceFields(credits: any): {
+  balance_usd: number | null;
+  grants_usd: number | null;
+} {
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const perk = num(credits?.perk_usd);
+  const plan = num(credits?.plan_usd);
+  return {
+    // An API without the *_usd fields only has the whole-dollar wallet.
+    balance_usd: num(credits?.wallet_usd) ?? num(credits?.balance),
+    grants_usd: perk == null && plan == null ? null : Math.round(((perk ?? 0) + (plan ?? 0)) * 10000) / 10000,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Vocabulary gate
@@ -1308,7 +1324,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'get_balance',
-    `Account balance, month-to-date usage and this account's own per-operation prices. ${priceTag('count_database')} Useful before a batch of paid work (what the user can afford) and after it (what was spent). These are the account's real rates; prices in tool descriptions are list prices.`,
+    `Account balance, month-to-date usage and this account's own per-operation prices. ${priceTag('count_database')} balance_usd is the wallet; grants_usd is bonus and plan credit (sign-up bonus, perks, plan allowance), reported apart. Grants are spent first, but only on the operations each one covers: a promo perk or a plan allowance may not pay for API calls, and a perk never pays for phone numbers, so the two figures do not add up to what the account can spend. Useful before a batch of paid work (what the user can afford) and after it (what was spent). These are the account's real rates; prices in tool descriptions are list prices.`,
     {
       include_transactions: z
         .number()
@@ -1339,7 +1355,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         );
         const out: Record<string, unknown> = {
           email: account?.data?.email ?? null,
-          balance_usd: account?.data?.credits?.balance ?? null,
+          ...balanceFields(account?.data?.credits),
           used_this_month_usd: account?.data?.credits?.used_this_month ?? null,
           preview_tier: account?.data?.preview_tier ?? null,
           cost: { operation: 'account', amount_charged_usd: 0, billed: 'free endpoint' },
@@ -2325,7 +2341,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           );
           out.credential_valid = true;
           out.account = data?.data?.email ?? null;
-          out.balance_usd = data?.data?.credits?.balance ?? null;
+          out.balance_usd = balanceFields(data?.data?.credits).balance_usd;
         } catch (err: any) {
           out.ok = false;
           out.credential_valid = false;
