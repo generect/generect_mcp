@@ -204,6 +204,8 @@ See [skills/README.md](skills/README.md).
 - [Release process](RELEASING.md)
 - [Issues](https://github.com/generect/generect_mcp/issues)
 
+If Generect saves you time, a star on this repository helps other people find it.
+
 ## License
 
 MIT
