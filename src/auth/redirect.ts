@@ -91,6 +91,34 @@ export function isLocalHost(hostname: string): boolean {
   return false;
 }
 
+/**
+ * Google's Connected Apps platform (Gemini, AI Mode in Search) sends users back
+ * to one of these hosts, under `/r/…` or `/a/…`
+ * (https://developers.google.com/connected-apps/mcp/oauth).
+ */
+const GOOGLE_CONNECTED_APPS_REDIRECT_HOSTS = new Set([
+  'oauth-redirect.googleusercontent.com',
+  'oauth-redirect-sandbox.googleusercontent.com',
+  'oauth-redirect-test.googleusercontent.com',
+]);
+
+/** True for a callback on Google's Connected Apps redirect hosts. */
+export function isGoogleConnectedAppsRedirect(uri: string): boolean {
+  try {
+    const url = new URL(uri);
+    return (
+      url.protocol === 'https:' &&
+      GOOGLE_CONNECTED_APPS_REDIRECT_HOSTS.has(url.hostname.toLowerCase()) &&
+      !url.port &&
+      !url.username &&
+      !url.password &&
+      (url.pathname.startsWith('/r/') || url.pathname.startsWith('/a/'))
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Hosts allowed in strict mode: our own domains plus known first-party clients. */
 function isFirstPartyHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
@@ -101,6 +129,8 @@ function isFirstPartyHost(hostname: string): boolean {
   //   linear.app -> https://linear.app/connect/mcp/callback
   if (host === 'claude.ai' || host === 'www.claude.ai') return true;
   if (host === 'linear.app' || host === 'www.linear.app') return true;
+  //   Google Connected Apps -> https://oauth-redirect*.googleusercontent.com/{r,a}/…
+  if (GOOGLE_CONNECTED_APPS_REDIRECT_HOSTS.has(host)) return true;
   return envList('MCP_ALLOWED_REDIRECT_DOMAINS').includes(host);
 }
 
@@ -166,7 +196,7 @@ export function redirectPolicyHint(): string {
   if (getRedirectPolicy() === 'strict') {
     return (
       'This server runs MCP_REDIRECT_POLICY=strict: only loopback http, ' +
-      '*.generect.com, claude.ai, linear.app, hosts in MCP_ALLOWED_REDIRECT_DOMAINS ' +
+      '*.generect.com, claude.ai, linear.app, Google Connected Apps, hosts in MCP_ALLOWED_REDIRECT_DOMAINS ' +
       'and schemes in MCP_ALLOWED_REDIRECT_SCHEMES are accepted.'
     );
   }

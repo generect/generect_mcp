@@ -25,6 +25,8 @@ WORKDIR /app
 COPY --from=base /app/node_modules ./node_modules
 COPY package.json ./package.json
 COPY --from=build /app/dist ./dist
+# Static /.well-known files (Google Connected Apps domain token).
+COPY well-known ./well-known
 
 ENV NODE_ENV=production \
     GENERECT_API_BASE=https://api.generect.com \

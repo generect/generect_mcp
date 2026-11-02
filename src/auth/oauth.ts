@@ -12,13 +12,20 @@ import {
   generateUserId,
   createRefreshToken,
   getRefreshToken,
+  extendRefreshToken,
   revokeRefreshToken,
   createHandoff,
   peekHandoff,
   consumeHandoff,
   OAuthClient,
 } from './storage.js';
-import { isValidRedirectUri, redirectPolicyHint, describeRedirectTarget, MAX_REDIRECT_URIS } from './redirect.js';
+import {
+  isValidRedirectUri,
+  redirectPolicyHint,
+  describeRedirectTarget,
+  isGoogleConnectedAppsRedirect,
+  MAX_REDIRECT_URIS,
+} from './redirect.js';
 import { generateAccessToken, ACCESS_TOKEN_TTL_SECONDS, getOAuthBaseUrl } from './jwt.js';
 import { safeFetchJson } from './ssrf.js';
 import { rateLimitAllow } from './ratelimit.js';
@@ -688,11 +695,45 @@ async function handleAuthorizePost(req: Request, res: Response) {
   );
 }
 
+// The client_id of a token or revocation request. RFC 6749 §2.3.1 lets a client
+// send it in the body or as the user name of HTTP Basic auth, and server-side
+// clients (Google's Connected Apps among them) commonly use Basic. We issue no
+// client secrets (public clients + PKCE), so a password in that header carries
+// nothing and is ignored; only the identifier is read. A body client_id wins.
+export function clientIdFromRequest(req: Request): string | undefined {
+  const fromBody = req.body?.client_id;
+  if (typeof fromBody === 'string' && fromBody) return fromBody;
+  const header = req.headers.authorization;
+  if (typeof header !== 'string') return undefined;
+  const m = /^Basic\s+([A-Za-z0-9+/=_-]+)\s*$/i.exec(header);
+  if (!m) return undefined;
+  const decoded = Buffer.from(m[1], 'base64').toString('utf8');
+  const sep = decoded.indexOf(':');
+  const rawId = sep === -1 ? decoded : decoded.slice(0, sep);
+  try {
+    // Basic credentials are form-urlencoded before base64 (RFC 6749 §2.3.1).
+    const id = decodeURIComponent(rawId.replace(/\+/g, ' '));
+    return id || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Clients that must get the SAME refresh token back on every refresh instead of
+// a rotated one. Google's Connected Apps platform requires it ("Persistent
+// Linking": return the exact same refresh token and extend its expiry), and a
+// client registered only with Google's redirect hosts can only ever receive its
+// authorization codes at Google, whose backend is where the token is kept.
+// Everyone else keeps one-time-use rotation (OAuth 2.1 §4.3.1 for public clients).
+export function keepsRefreshToken(client: OAuthClient | undefined): boolean {
+  return !!client && client.redirectUris.length > 0 && client.redirectUris.every(isGoogleConnectedAppsRedirect);
+}
+
 async function handleToken(req: Request, res: Response) {
   const grantType = req.body.grant_type as string;
   const code = req.body.code as string;
   const redirectUri = req.body.redirect_uri as string;
-  const clientId = req.body.client_id as string;
+  const clientId = clientIdFromRequest(req) as string;
   const codeVerifier = req.body.code_verifier as string;
 
   res.set('Cache-Control', 'no-store');
@@ -803,10 +844,12 @@ async function handleToken(req: Request, res: Response) {
 }
 
 // refresh_token grant: exchange a valid, unrevoked refresh token for a new access
-// token. Rotates the refresh token (one-time use) to limit replay of a leaked one.
+// token. Rotates the refresh token (one-time use) to limit replay of a leaked one,
+// except for clients that must keep it (keepsRefreshToken), whose token is
+// returned unchanged with its expiry extended.
 async function handleRefreshGrant(req: Request, res: Response) {
   const refreshToken = req.body.refresh_token as string;
-  const clientId = req.body.client_id as string;
+  const clientId = clientIdFromRequest(req) as string;
 
   if (!refreshToken) {
     res.status(400).json({ error: 'invalid_request', error_description: 'refresh_token is required' });
@@ -835,6 +878,16 @@ async function handleRefreshGrant(req: Request, res: Response) {
 
   try {
     const accessToken = await generateAccessToken(stored.apiToken, stored.userId, stored.clientId);
+    if (keepsRefreshToken(getClient(stored.clientId)) && extendRefreshToken(refreshToken) !== null) {
+      res.json({
+        access_token: accessToken,
+        token_type: 'Bearer',
+        expires_in: ACCESS_TOKEN_TTL_SECONDS,
+        refresh_token: refreshToken,
+        scope: stored.scope,
+      });
+      return;
+    }
     // Rotate: invalidate the used refresh token and issue a fresh one.
     revokeRefreshToken(refreshToken);
     const newRefresh = createRefreshToken({
