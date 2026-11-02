@@ -20,4 +20,7 @@ Thumbs.db
 # Persisted OAuth client registry (metadata only, no secrets)
 .oauth-clients.json
 .oauth-clients.json.tmp
+# Persisted refresh tokens (hashed, API key encrypted) — never commit
+.oauth-refresh-tokens.json
+.oauth-refresh-tokens.json.tmp
 ui/preview/shots/

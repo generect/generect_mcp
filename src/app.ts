@@ -7,6 +7,7 @@ import { createMcpHandler, isInitializeRequest, isLegacyRequest } from '@modelco
 import { createMcpServer as createMcpServerFor } from './mcp-server.js';
 import { toAuthHeader } from './auth/credential.js';
 import { VERSION } from './version.js';
+import { GOOGLE_VERIFICATION_PATH, handleGoogleVerification } from './google-verification.js';
 import {
   handleProtectedResourceMetadata,
   handleAuthorizationServerMetadata,
@@ -145,6 +146,8 @@ export function createApp(fetcher: typeof fetch = fetch): express.Express {
   app.get(prmPaths, metadata(handleProtectedResourceMetadata));
   app.get(asPaths, metadata(handleAuthorizationServerMetadata));
   app.get('/.well-known/jwks.json', metadata(handleJwks));
+  // Google Connected Apps domain verification (see src/google-verification.ts).
+  app.get(GOOGLE_VERIFICATION_PATH, handleGoogleVerification);
 
   app.use('/oauth', oauthRouter);
 

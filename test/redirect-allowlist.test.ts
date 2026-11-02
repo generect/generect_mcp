@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { isValidRedirectUri, describeRedirectTarget, loopbackEquivalent } from '../src/auth/redirect.ts';
 import { validateRedirectUri, OAuthClient } from '../src/auth/storage.ts';
+import * as redirectModule from '../src/auth/redirect.ts';
 
 // The redirect policy decides where an authorization code may be delivered
 // (CWE-601). The default is open — any app can register — so what is pinned here
@@ -154,4 +155,29 @@ test('loopback callbacks match on everything but the port (RFC 8252 §7.3)', () 
   // The exception must never bridge a loopback registration to a remote host.
   assert.equal(loopbackEquivalent('http://127.0.0.1:8976/cb', 'http://evil.example:8976/cb'), false);
   assert.equal(loopbackEquivalent('https://127.0.0.1:8976/cb', 'http://127.0.0.1:8976/cb'), false);
+});
+
+test('Google Connected Apps callbacks are recognised exactly, and pass strict policy', () => {
+  const { isGoogleConnectedAppsRedirect } = redirectModule;
+  for (const uri of [
+    'https://oauth-redirect.googleusercontent.com/r/generect',
+    'https://oauth-redirect-sandbox.googleusercontent.com/r/generect',
+    'https://oauth-redirect-test.googleusercontent.com/a/generect',
+    'https://OAUTH-REDIRECT.googleusercontent.com/r/x',
+  ]) {
+    assert.equal(isGoogleConnectedAppsRedirect(uri), true, uri);
+    withEnv(STRICT, () => assert.equal(isValidRedirectUri(uri), true, `strict accepts ${uri}`));
+  }
+  for (const uri of [
+    'http://oauth-redirect.googleusercontent.com/r/x', // cleartext
+    'https://oauth-redirect.googleusercontent.com/x/y', // not /r or /a
+    'https://oauth-redirect.googleusercontent.com:8443/r/x', // other port
+    'https://evil.oauth-redirect.googleusercontent.com/r/x', // subdomain
+    'https://oauth-redirect.googleusercontent.com.evil.test/r/x', // suffix trick
+    'https://oauth-redirect.googleusercontent.com@evil.test/r/x', // credentials trick
+    'https://googleusercontent.com/r/x',
+    'not a url',
+  ]) {
+    assert.equal(isGoogleConnectedAppsRedirect(uri), false, uri);
+  }
 });

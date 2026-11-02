@@ -95,3 +95,122 @@ test('a corrupt client store never prevents startup', async () => {
     unlinkSync(path);
   } catch {}
 });
+
+// --- Refresh token persistence (Google "Persistent Linking", PRO-1974) ---------
+
+function tmpPath(tag: string) {
+  return `/tmp/rt-unit-${tag}-${process.pid}-${Date.now()}-${caseId}.json`;
+}
+async function cleanup(...paths: string[]) {
+  const { unlinkSync } = await import('node:fs');
+  for (const p of paths) {
+    try {
+      unlinkSync(p);
+    } catch {}
+  }
+}
+const KEYS = { TOKEN_ENCRYPTION_KEY: 'cd'.repeat(32), REFRESH_TOKEN_TTL_SECONDS: '3600' };
+
+test('refresh tokens survive a restart, and the file holds neither the token nor the API key', async () => {
+  const path = tmpPath('persist');
+  const s1 = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: path });
+  const tok = s1.createRefreshToken({ clientId: 'c1', userId: 'u1', apiToken: 'secret-api-key-123' });
+
+  const { readFileSync, statSync } = await import('node:fs');
+  const raw = readFileSync(path, 'utf8');
+  assert.ok(!raw.includes(tok), 'the refresh token itself is never written');
+  assert.ok(!raw.includes('secret-api-key-123'), 'the API key is never written in clear');
+  assert.equal(statSync(path).mode & 0o777, 0o600, 'store is owner-only');
+
+  const s2 = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: path });
+  const got = s2.getRefreshToken(tok);
+  assert.ok(got, 'token still redeemable after restart');
+  assert.equal(got.apiToken, 'secret-api-key-123');
+  assert.equal(got.clientId, 'c1');
+  assert.equal(got.userId, 'u1');
+  await cleanup(path);
+});
+
+test('a revoked refresh token stays revoked across a restart', async () => {
+  const path = tmpPath('revoke');
+  const s1 = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: path });
+  const tok = s1.createRefreshToken({ clientId: 'c1', userId: 'u1', apiToken: 'k' });
+  assert.equal(s1.revokeRefreshToken(tok), true);
+  const s2 = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: path });
+  assert.equal(s2.getRefreshToken(tok), null, 'revocation is persisted, not undone by a restart');
+  await cleanup(path);
+});
+
+test('extendRefreshToken pushes the expiry out a full TTL and persists it', async () => {
+  const path = tmpPath('extend');
+  const s1 = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: path });
+  const tok = s1.createRefreshToken({ clientId: 'c1', userId: 'u1', apiToken: 'k' });
+  const before = s1.getRefreshToken(tok).expiresAt;
+  await new Promise(r => setTimeout(r, 15));
+  const extended = s1.extendRefreshToken(tok);
+  assert.ok(extended > before, 'expiry moved forward');
+  const s2 = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: path });
+  assert.equal(s2.getRefreshToken(tok).expiresAt, extended, 'extended expiry survives restart');
+  assert.equal(s1.extendRefreshToken('unknown'), null, 'unknown token is not extended');
+  s1.revokeRefreshToken(tok);
+  assert.equal(s1.extendRefreshToken(tok), null, 'revoked token cannot be extended back to life');
+  await cleanup(path);
+});
+
+test('an expired refresh token is not extended and is dropped from the store', async () => {
+  const path = tmpPath('expired');
+  const s = await freshStorage({ ...KEYS, REFRESH_TOKEN_TTL_SECONDS: '-1', MCP_REFRESH_STORE_PATH: path });
+  const tok = s.createRefreshToken({ clientId: 'c1', userId: 'u1', apiToken: 'k' });
+  assert.equal(s.extendRefreshToken(tok), null);
+  assert.equal(s.getRefreshToken(tok), null);
+  const s2 = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: path });
+  assert.equal(s2.getRefreshToken(tok), null, 'expired tokens are not restored');
+  await cleanup(path);
+});
+
+test('MCP_REFRESH_STORE_PATH=off keeps refresh tokens in memory only', async () => {
+  const s = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: 'off' });
+  const tok = s.createRefreshToken({ clientId: 'c1', userId: 'u1', apiToken: 'k' });
+  assert.ok(s.getRefreshToken(tok), 'still works in memory');
+  const { existsSync } = await import('node:fs');
+  assert.equal(existsSync('off'), false, 'no file named after the switch');
+  const s2 = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: 'off' });
+  assert.equal(s2.getRefreshToken(tok), null, 'nothing restored');
+});
+
+test('a corrupt refresh store never prevents startup', async () => {
+  const path = tmpPath('corrupt');
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(path, '{not json');
+  const s = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: path });
+  assert.equal(s.getRefreshToken('anything'), null);
+  const tok = s.createRefreshToken({ clientId: 'c1', userId: 'u1', apiToken: 'k' });
+  assert.ok(s.getRefreshToken(tok), 'and the store is usable again');
+  await cleanup(path);
+});
+
+test('a stored token that no longer decrypts (key rotated) is refused, not a crash', async () => {
+  const path = tmpPath('rotated');
+  const s1 = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: path });
+  const tok = s1.createRefreshToken({ clientId: 'c1', userId: 'u1', apiToken: 'k' });
+  const s2 = await freshStorage({ ...KEYS, TOKEN_ENCRYPTION_KEY: 'ef'.repeat(32), MCP_REFRESH_STORE_PATH: path });
+  assert.equal(s2.getRefreshToken(tok), null, 'undecryptable record resolves to null');
+  const s3 = await freshStorage({ ...KEYS, MCP_REFRESH_STORE_PATH: path });
+  assert.equal(s3.getRefreshToken(tok), null, 'and it was dropped, not left to fail again');
+  await cleanup(path);
+});
+
+test('refresh store is capped: the tokens closest to expiry go first', async () => {
+  const path = tmpPath('cap');
+  const s = await freshStorage({ ...KEYS, MCP_MAX_REFRESH_TOKENS: '2', MCP_REFRESH_STORE_PATH: path });
+  const a = s.createRefreshToken({ clientId: 'c', userId: 'u', apiToken: 'k' });
+  await new Promise(r => setTimeout(r, 5));
+  const b = s.createRefreshToken({ clientId: 'c', userId: 'u', apiToken: 'k' });
+  await new Promise(r => setTimeout(r, 5));
+  const c = s.createRefreshToken({ clientId: 'c', userId: 'u', apiToken: 'k' });
+  assert.equal(s.getRefreshToken(a), null, 'oldest (soonest to expire) evicted');
+  assert.ok(s.getRefreshToken(b));
+  assert.ok(s.getRefreshToken(c));
+  await cleanup(path);
+  delete process.env.MCP_MAX_REFRESH_TOKENS;
+});

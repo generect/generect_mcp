@@ -1,6 +1,7 @@
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { loopbackEquivalent } from './redirect.js';
+import { encryptApiToken, decryptApiToken } from './crypto.js';
 
 export interface OAuthClient {
   clientId: string;
@@ -42,6 +43,18 @@ export interface RefreshToken {
   revoked: boolean;
 }
 
+// What is kept per refresh token, in memory and on disk. The user's API key is
+// held only encrypted (TOKEN_ENCRYPTION_KEY, the same key that seals it inside
+// every access token we hand out) and decrypted when the token is redeemed.
+interface StoredRefreshToken {
+  hash: string;
+  clientId: string;
+  userId: string;
+  apiTokenEnc: string;
+  scope: string;
+  expiresAt: number;
+}
+
 // A pending authorization handed off to the product UI for consent. It holds the
 // ORIGINAL OAuth request parameters so the redirect target and PKCE binding come
 // from here — never from whatever the broker call sends. Short-lived, single-use.
@@ -59,7 +72,10 @@ export interface Handoff {
 
 const clients = new Map<string, OAuthClient>();
 const authCodes = new Map<string, AuthCode>();
-const refreshTokens = new Map<string, RefreshToken>();
+// Keyed by sha256(token), never by the token itself: the map is persisted (see
+// "Refresh token persistence" below) and a copy of the file must not be a list
+// of redeemable refresh tokens.
+const refreshTokens = new Map<string, StoredRefreshToken>();
 const handoffs = new Map<string, Handoff>();
 
 const HANDOFF_TTL_MS = Number(process.env.MCP_HANDOFF_TTL_SECONDS || '600') * 1000;
@@ -77,8 +93,9 @@ const REFRESH_TOKEN_TTL_MS = Number(process.env.REFRESH_TOKEN_TTL_SECONDS || Str
 // in production for a client that registered on 2026-07-12 and then failed
 // repeatedly on 2026-07-18 after a restart).
 //
-// Only CLIENT metadata is persisted — never auth codes or refresh tokens, which
-// carry the user's API credential. Those stay in memory by design.
+// This file holds CLIENT metadata only. Auth codes stay in memory (they live ten
+// minutes). Refresh tokens are persisted separately, hashed and with the API
+// credential encrypted: see "Refresh token persistence" below.
 const CLIENT_STORE_PATH = process.env.MCP_CLIENT_STORE_PATH || '.oauth-clients.json';
 
 function loadClientsFromDisk(): void {
@@ -162,7 +179,7 @@ function enforceClientCap(): void {
   const now = Date.now();
   const inUse = new Set<string>();
   for (const c of authCodes.values()) if (c.expiresAt > now) inUse.add(c.clientId);
-  for (const r of refreshTokens.values()) if (!r.revoked && r.expiresAt > now) inUse.add(r.clientId);
+  for (const r of refreshTokens.values()) if (r.expiresAt > now) inUse.add(r.clientId);
 
   const byAge = [...clients.values()].sort((a, b) => a.createdAt - b.createdAt);
   for (const c of byAge) {
@@ -268,11 +285,14 @@ export function cleanupExpiredCodes(): void {
       authCodes.delete(code);
     }
   }
-  for (const [token, rt] of refreshTokens) {
-    if (rt.revoked || rt.expiresAt < now) {
-      refreshTokens.delete(token);
+  let droppedRefresh = false;
+  for (const [hash, rt] of refreshTokens) {
+    if (rt.expiresAt < now) {
+      refreshTokens.delete(hash);
+      droppedRefresh = true;
     }
   }
+  if (droppedRefresh) persistRefreshTokens();
   for (const [id, h] of handoffs) {
     if (h.expiresAt < now) handoffs.delete(id);
   }
@@ -317,6 +337,86 @@ export function consumeHandoff(id: string): Handoff | null {
 }
 
 // --- Refresh tokens (enable bounded-lifetime access tokens + revocation) ---
+//
+// Refresh token persistence. Refresh tokens used to live only in memory, so
+// every deploy (CI deploys each green merge to main) silently invalidated all
+// of them. A client then had nothing to renew with once its 30-day access token
+// ran out, and the user had to connect again. Google's Connected Apps platform
+// makes this a hard requirement ("Persistent Linking": the refresh token must
+// keep working, and its expiry is extended on use), so they now survive a
+// restart, under these rules:
+//
+//   - the token itself is never written: the key is its sha256;
+//   - the user's API key is written only AES-GCM encrypted, with the key that
+//     already seals it inside every access token (crypto.ts);
+//   - the file is 0600 and written atomically (temp + rename);
+//   - MCP_REFRESH_STORE_PATH=off keeps the old memory-only behaviour.
+const REFRESH_STORE_PATH = process.env.MCP_REFRESH_STORE_PATH ?? '.oauth-refresh-tokens.json';
+const REFRESH_PERSIST = !['', 'off', 'false', '0', 'none'].includes(REFRESH_STORE_PATH.trim().toLowerCase());
+
+// Every refresh token belongs to a user who completed a Generect login, so the
+// count is bounded by real logins, not by anonymous traffic. The cap is a
+// backstop against a bug or a login loop growing the file without limit.
+const MAX_REFRESH_TOKENS = Number(process.env.MCP_MAX_REFRESH_TOKENS || '50000');
+
+function hashRefreshToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function isStoredRefreshToken(r: any): r is StoredRefreshToken {
+  return (
+    r &&
+    typeof r.hash === 'string' &&
+    typeof r.clientId === 'string' &&
+    typeof r.userId === 'string' &&
+    typeof r.apiTokenEnc === 'string' &&
+    typeof r.scope === 'string' &&
+    typeof r.expiresAt === 'number'
+  );
+}
+
+function loadRefreshTokensFromDisk(): void {
+  if (!REFRESH_PERSIST) return;
+  try {
+    const parsed = JSON.parse(readFileSync(REFRESH_STORE_PATH, 'utf8'));
+    if (!Array.isArray(parsed)) return;
+    const now = Date.now();
+    for (const r of parsed) {
+      if (isStoredRefreshToken(r) && r.expiresAt > now) refreshTokens.set(r.hash, r);
+    }
+    console.log(`[oauth] Restored ${refreshTokens.size} refresh token(s) from ${REFRESH_STORE_PATH}`);
+  } catch (err: any) {
+    // ENOENT on first boot is normal; a corrupt file must never stop the server.
+    if (err?.code !== 'ENOENT') {
+      console.error(`[oauth] Could not load refresh token store (${REFRESH_STORE_PATH}):`, err?.message ?? err);
+    }
+  }
+}
+
+// Same atomic, synchronous write as the client registry. Writes happen on a
+// login, a refresh or a revocation: a handful a day per user.
+function persistRefreshTokens(): void {
+  if (!REFRESH_PERSIST) return;
+  try {
+    const tmp = `${REFRESH_STORE_PATH}.tmp`;
+    writeFileSync(tmp, JSON.stringify([...refreshTokens.values()]), { mode: 0o600 });
+    renameSync(tmp, REFRESH_STORE_PATH);
+  } catch (err: any) {
+    console.error(`[oauth] Could not persist refresh token store:`, err?.message ?? err);
+  }
+}
+
+function enforceRefreshCap(): void {
+  if (refreshTokens.size <= MAX_REFRESH_TOKENS) return;
+  // Drop the ones closest to expiry: they are the least use to anybody.
+  const bySoonest = [...refreshTokens.values()].sort((a, b) => a.expiresAt - b.expiresAt);
+  for (const r of bySoonest) {
+    if (refreshTokens.size <= MAX_REFRESH_TOKENS) break;
+    refreshTokens.delete(r.hash);
+  }
+}
+
+loadRefreshTokensFromDisk();
 
 export function createRefreshToken(data: {
   clientId: string;
@@ -325,36 +425,75 @@ export function createRefreshToken(data: {
   scope?: string;
 }): string {
   const token = randomBytes(32).toString('base64url');
-  refreshTokens.set(token, {
-    token,
+  const hash = hashRefreshToken(token);
+  refreshTokens.set(hash, {
+    hash,
     clientId: data.clientId,
     userId: data.userId,
-    apiToken: data.apiToken,
+    apiTokenEnc: encryptApiToken(data.apiToken),
     scope: data.scope || 'generect:api',
     expiresAt: Date.now() + REFRESH_TOKEN_TTL_MS,
-    revoked: false,
   });
+  enforceRefreshCap();
+  persistRefreshTokens();
   return token;
 }
 
 // Look up a refresh token without consuming it. Returns null if unknown, revoked,
-// or expired.
+// or expired — and if the stored API key no longer decrypts (the encryption key
+// was rotated), which leaves the client to connect again rather than crash.
 export function getRefreshToken(token: string): RefreshToken | null {
-  const rt = refreshTokens.get(token);
+  if (typeof token !== 'string' || !token) return null;
+  const hash = hashRefreshToken(token);
+  const rt = refreshTokens.get(hash);
   if (!rt) return null;
-  if (rt.revoked || rt.expiresAt < Date.now()) return null;
-  return rt;
+  if (rt.expiresAt < Date.now()) {
+    refreshTokens.delete(hash);
+    persistRefreshTokens();
+    return null;
+  }
+  let apiToken: string;
+  try {
+    apiToken = decryptApiToken(rt.apiTokenEnc);
+  } catch {
+    console.error('[oauth] A stored refresh token no longer decrypts (encryption key changed?); dropping it');
+    refreshTokens.delete(hash);
+    persistRefreshTokens();
+    return null;
+  }
+  return {
+    token,
+    clientId: rt.clientId,
+    userId: rt.userId,
+    apiToken,
+    scope: rt.scope,
+    expiresAt: rt.expiresAt,
+    revoked: false,
+  };
+}
+
+// Push a live refresh token's expiry out by a full TTL from now. Used instead of
+// rotation for clients that must keep the same token (see oauth.ts,
+// keepsRefreshToken). Returns the new expiry, or null if the token is not live.
+export function extendRefreshToken(token: string): number | null {
+  if (typeof token !== 'string' || !token) return null;
+  const rt = refreshTokens.get(hashRefreshToken(token));
+  if (!rt || rt.expiresAt < Date.now()) return null;
+  rt.expiresAt = Date.now() + REFRESH_TOKEN_TTL_MS;
+  persistRefreshTokens();
+  return rt.expiresAt;
 }
 
 // Revoke a refresh token (RFC 7009). Idempotent; returns true if a live token was
 // found and revoked.
 export function revokeRefreshToken(token: string): boolean {
-  const rt = refreshTokens.get(token);
+  if (typeof token !== 'string' || !token) return false;
+  const hash = hashRefreshToken(token);
+  const rt = refreshTokens.get(hash);
   if (!rt) return false;
-  const wasLive = !rt.revoked;
-  rt.revoked = true;
-  refreshTokens.delete(token);
-  return wasLive;
+  refreshTokens.delete(hash);
+  persistRefreshTokens();
+  return rt.expiresAt >= Date.now();
 }
 
 export function cleanupExpired(): void {
