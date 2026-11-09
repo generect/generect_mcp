@@ -26,7 +26,7 @@ export function registerPrompts(server: McpServer): void {
     {
       title: 'Size an audience (free)',
       description:
-        'Turn a plain-language ICP into filters and find out how many people match — without spending anything.',
+        'Turn a plain-language ICP into filters and find out how many people match, without spending anything.',
       argsSchema: {
         icp: z.string().describe('The audience in plain language, e.g. "heads of partnerships at German fintechs".'),
       },
@@ -49,7 +49,7 @@ export function registerPrompts(server: McpServer): void {
     'build_prospect_list',
     {
       title: 'Build a prospect list safely',
-      description: 'Count, preview, then buy only the rows the user approved — and report the exact spend.',
+      description: 'Count, preview, then buy only the rows the user approved, and report the exact spend.',
       argsSchema: {
         icp: z.string().describe('The audience in plain language.'),
         count: z.string().describe('How many contacts are wanted, e.g. "20".'),
@@ -88,7 +88,7 @@ export function registerPrompts(server: McpServer): void {
         [
           `Enrich the records in: ${source}`,
           '',
-          '1. Read the file and deduplicate first — duplicates are duplicate charges.',
+          '1. Read the file and deduplicate first: duplicates are duplicate charges.',
           '2. Drop rows with no usable identifier (Generect id, LinkedIn URL, email, or name + company domain). Enriching an unusable row costs the same as a real one.',
           '3. Check get_balance and tell me what the batch will cost before starting.',
           '4. Up to 10 records: enrich_lead each. More: start_bulk_job (max 50 per job) then get_bulk_job.',

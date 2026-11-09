@@ -17,7 +17,7 @@ const KINDS = {
   industries: {
     title: 'LinkedIn industries',
     describe: () =>
-      'Every industry name the Generect API matches on, with its parent. Matching is exact and unknown names are NOT rejected — they silently return 0 results.',
+      'Every industry name the Generect API matches on, with its parent. Matching is exact and unknown names are NOT rejected: they silently return 0 results.',
     payload: () => ({ count: INDUSTRIES.length, exact_match_required: true, industries: INDUSTRIES }),
   },
   seniorities: {
@@ -28,7 +28,7 @@ const KINDS = {
   },
   functions: {
     title: 'Job functions (realtime only)',
-    describe: () => 'Job functions. Realtime-only filter — using it forces the pricier live mode.',
+    describe: () => 'Job functions. Realtime-only filter: using it forces the pricier live mode.',
     payload: () => ({ count: FUNCTIONS.length, realtime_only: true, functions: FUNCTIONS }),
   },
   'company-types': {
@@ -92,7 +92,7 @@ export function registerResources(server: McpServer, deps: ResourceDeps): void {
     {
       title: 'Generect filter vocabularies',
       description:
-        'The exact values the Generect API matches on: industries, seniorities, functions, company types, headcount buckets, follower ranges. Read this instead of guessing — an unknown industry or seniority returns a successful, empty, free result rather than an error.',
+        'The exact values the Generect API matches on: industries, seniorities, functions, company types, headcount buckets, follower ranges. Read this instead of guessing: an unknown industry or seniority returns a successful, empty, free result rather than an error.',
       mimeType: 'application/json',
     },
     async (uri: URL, variables: Record<string, unknown>) => {
@@ -114,7 +114,7 @@ export function registerResources(server: McpServer, deps: ResourceDeps): void {
     {
       title: 'Your per-operation prices',
       description:
-        "This account's real price for every operation, read from its spend tier. These are the numbers to quote to a user — the prices in tool descriptions and in the public docs are list prices and have not always matched what is billed.",
+        "This account's real price for every operation, read from its spend tier. These are the numbers to quote to a user; the prices in tool descriptions and in the public docs are list prices and have not always matched what is billed.",
       mimeType: 'application/json',
     },
     async (uri: URL, extra: any) => {
