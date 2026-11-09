@@ -314,7 +314,7 @@ export function checkVocabulary(filters: Record<string, unknown> | undefined | n
         field,
         value,
         severity: 'blocking',
-        reason: `"${value}" is not a LinkedIn industry. The API does not reject unknown industries — it returns 0 results and charges nothing, which looks exactly like an empty audience. Nothing was sent.`,
+        reason: `"${value}" is not a LinkedIn industry. The API does not reject unknown industries: it returns 0 results and charges nothing, which looks exactly like an empty audience. Nothing was sent.`,
         did_you_mean: dedupe([...aliasHints('industry', value), ...suggest(value, INDUSTRY_NAMES)]),
       });
     }
@@ -341,7 +341,7 @@ export function checkVocabulary(filters: Record<string, unknown> | undefined | n
         field,
         value,
         severity: 'warning',
-        reason: `"${value}" is not a canonical ${label}. The API accepts it without complaint and may match loosely or not at all — prefer a canonical value.`,
+        reason: `"${value}" is not a canonical ${label}. The API accepts it without complaint and may match loosely or not at all, so prefer a canonical value.`,
         did_you_mean: dedupe([...(kind ? aliasHints(kind, value) : []), ...suggest(value, vocabulary)]),
       });
     }

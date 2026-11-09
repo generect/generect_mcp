@@ -164,7 +164,13 @@ function createRegistrar(server: McpServer): Registrar {
             // has additionalProperties: false, and clients reject any result key
             // the shape does not list — add new keys to TOOL_META too.
             ...(meta
-              ? { title: meta.title, annotations: meta.annotations, outputSchema: z.object(meta.outputSchema) }
+              ? {
+                  title: meta.title,
+                  // The directory policy (5E) asks for the title among the
+                  // annotations as well as on the tool itself.
+                  annotations: { title: meta.title, ...meta.annotations },
+                  outputSchema: z.object(meta.outputSchema),
+                }
               : {}),
             description: entry.description,
             inputSchema: z.object(entry.schema ?? {}),
@@ -290,9 +296,9 @@ function apiError(err: any) {
   const thinUnavailable =
     /thin\\?"? search is not (enabled|available)/i.test(text) || /`detail` filter is not supported/i.test(text);
   const nextStep = insufficient
-    ? 'The account is out of credits. Nothing was charged. Call get_balance, tell the user the balance, and stop — do not retry.'
+    ? 'The account is out of credits. Nothing was charged. Call get_balance, tell the user the balance, and stop. Do not retry.'
     : quotaSpent
-      ? 'You asked for detail "thin" explicitly and today\'s free thin-row quota is used up; nothing was charged. It resets at 00:00 UTC. Continuing now means detail "full", billed per row — ask the user before switching.'
+      ? 'You asked for detail "thin" explicitly and today\'s free thin-row quota is used up; nothing was charged. It resets at 00:00 UTC. Continuing now means detail "full", billed per row, so ask the user before switching.'
       : thinUnavailable
         ? 'You asked for detail "thin" explicitly and it is not available for this account. Nothing was charged. Repeat with detail "full" (or without detail) only if the user accepts the per-row price (get_balance shows it).'
         : undefined;
@@ -353,7 +359,7 @@ function vocabularyBlocked(blocking: VocabularyProblem[]) {
     blocked_by_vocabulary: blocking,
     fix:
       'Replace each value with one of its did_you_mean options and call again. ' +
-      'These values are matched exactly and the API would not have complained — it would have returned an empty result. ' +
+      'These values are matched exactly and the API would not have complained: it would have returned an empty result. ' +
       "If you are certain the value is valid and this server's vocabulary is simply out of date, pass allow_unlisted_values:true.",
   });
 }
@@ -449,7 +455,7 @@ function unsupportedFilters(detail: unknown): string[] {
 // Filters that only exist in realtime mode. Used for DESCRIPTIONS only (so the
 // model can predict the cost before calling); runtime routing is driven by the
 // API response above.
-const REALTIME_ONLY_NOTE = ' — realtime only: using it forces the pricier live mode.';
+const REALTIME_ONLY_NOTE = '. Realtime only: using it forces the pricier live mode.';
 
 function modeParam(what: string) {
   return z
@@ -603,7 +609,7 @@ function thinFacts(
     detail: 'thin',
     free_tier: data?.meta?.free_tier ?? null,
     thin_note:
-      'Thin rows: free, but no LinkedIn URL, domain or contacts. Spend only on the rows you keep — generate_email takes the lead id; enrich_lead / enrich_company return the full record.',
+      'Thin rows: free, but no LinkedIn URL, domain or contacts. Spend only on the rows you keep: generate_email takes the lead id; enrich_lead / enrich_company return the full record.',
   };
 }
 
@@ -629,7 +635,7 @@ function detailParam(what: 'lead' | 'company') {
   return z
     .enum(['thin', 'full'])
     .describe(
-      `Row detail for the database search. Thin rows are FREE — ${thin}; no LinkedIn URL, domain, contacts or history — up to a daily per-account row quota that resets at 00:00 UTC. Omitted (default): thin while the free tier is available; once it is not (quota spent, a custom-contract account, a server without the tier) the search continues as before — full rows billed per row, marked thin_unavailable in the result, under the spend ceiling. "thin": free rows only — never billed, never escalated to realtime; a spent quota is a 429 and a realtime-only filter is an error. "full": the whole record, billed per row. Browse thin, then spend only on the rows you keep: generate_email takes the lead id directly, enrich_* gives the full record.`,
+      `Row detail for the database search. Thin rows are FREE (${thin}; no LinkedIn URL, domain, contacts or history) up to a daily per-account row quota that resets at 00:00 UTC. Omitted (default): thin while the free tier is available; once it is not (quota spent, a custom-contract account, a server without the tier) the search continues as before: full rows billed per row, marked thin_unavailable in the result, under the spend ceiling. "thin": free rows only, never billed, never escalated to realtime; a spent quota is a 429 and a realtime-only filter is an error. "full": the whole record, billed per row. Browse thin, then spend only on the rows you keep: generate_email takes the lead id directly, enrich_* gives the full record.`,
     )
     .optional();
 }
@@ -669,7 +675,7 @@ function resolveDetail(
 // to prevent, so the removed names stay declared and are handled explicitly.
 const LEGACY_NOTES: Record<string, string> = {
   exclude_title_keywords: 'No v1 equivalent. Narrow job_titles instead, or filter the returned rows yourself.',
-  without_company: 'No longer needed — v1 filter-only search is the default when no company anchor is set.',
+  without_company: 'No longer needed: v1 filter-only search is the default when no company anchor is set.',
   get_max_leads: 'Always on now: search responses include results_count without asking.',
   get_max_companies: 'Always on now: search responses include results_count without asking.',
   fallback_from_leads: 'Removed. It fabricated lead-derived name aggregates and cost an extra billable query.',
@@ -680,8 +686,15 @@ const LEGACY_NOTES: Record<string, string> = {
   inexact_company: 'Removed: v1 enrich matches on the identifier you pass.',
 };
 
+// Each keeps the type it had before v1 (0.5.0), so the published JSON Schema
+// names a type for every parameter, as the Claude directory portal requires.
+// z.any() published no type at all.
+const LEGACY_LISTS = new Set(['exclude_title_keywords', 'lead_industries']);
+
 const legacyFlag = (name: string) =>
-  z.any().describe(`DEPRECATED — accepted but ignored. ${LEGACY_NOTES[name]}`).optional();
+  (LEGACY_LISTS.has(name) ? z.array(z.string()) : z.boolean())
+    .describe(`DEPRECATED: accepted but ignored. ${LEGACY_NOTES[name]}`)
+    .optional();
 
 const LEGACY_LEAD_SHAPE = {
   job_title: z
@@ -845,7 +858,7 @@ const compactParam = (what: string) =>
   z
     .boolean()
     .describe(
-      `Default true: return a small per-${what} summary (including the Generect \`id\`, which every later step accepts). Set false for the full raw record (~80 fields) — only worth it when you specifically need skills, education or other deep fields.`,
+      `Default true: return a small per-${what} summary (including the Generect \`id\`, which every later step accepts). Set false for the full raw record (~80 fields), only worth it when you specifically need skills, education or other deep fields.`,
     )
     .optional();
 
@@ -865,7 +878,7 @@ const LEAD_FILTERS = {
     .optional(),
   locations: z
     .array(z.string())
-    .describe('Where the lead lives — matches cities, states and countries, e.g. ["United States","Berlin"].')
+    .describe('Where the lead lives: matches cities, states and countries, e.g. ["United States","Berlin"].')
     .optional(),
   exclude_locations: z.array(z.string()).describe('Lead locations to exclude.').optional(),
   company_locations: z.array(z.string()).describe("HQ location of the lead's current employer.").optional(),
@@ -905,7 +918,7 @@ const LEAD_FILTERS = {
   exclude_ids: z
     .array(z.union([z.string(), z.number()]))
     .describe(
-      'Skip leads by Generect/Sales-Navigator id. Pass the ids you already received to paginate without duplicates — ordering is not stable, so this is more reliable than offset.',
+      'Skip leads by Generect/Sales-Navigator id. Pass the ids you already received to paginate without duplicates. Ordering is not stable, so this is more reliable than offset.',
     )
     .optional(),
   filter_empty_vars: z
@@ -979,7 +992,7 @@ const COMPANY_FILTERS = {
       'Size buckets. Allowed ONLY: "1-10","11-50","51-200","201-500","501-1000","1001-5000","5001-10000","10 000+".',
     )
     .optional(),
-  locations: z.array(z.string()).describe('HQ locations — cities, states or countries.').optional(),
+  locations: z.array(z.string()).describe('HQ locations: cities, states or countries.').optional(),
   exclude_locations: z.array(z.string()).describe('HQ locations to exclude.').optional(),
   company_types: z
     .array(z.string())
@@ -1030,7 +1043,7 @@ const COMPANY_FILTERS = {
     .optional(),
   allow_unlisted_values: z
     .boolean()
-    .describe('Escape hatch for the local vocabulary check — see the lead-side field of the same name.')
+    .describe('Escape hatch for the local vocabulary check; see the lead-side field of the same name.')
     .optional(),
 };
 
@@ -1056,7 +1069,7 @@ const PAGING = {
 const IDENTIFY_LEAD = {
   lead_id: z
     .string()
-    .describe('Generect lead id from search / preview / enrich results — the cheapest and most accurate identifier.')
+    .describe('Generect lead id from search / preview / enrich results: the cheapest and most accurate identifier.')
     .optional(),
   linkedin_url: z.string().describe('LinkedIn profile URL.').optional(),
   first_name: z.string().describe('First name (name+domain mode).').optional(),
@@ -1162,7 +1175,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
             mode: 'none',
             cost: { operation: 'none', amount_charged_usd: 0, billed: 'nothing was sent' },
             vocabulary_warnings: warnings,
-            why: 'A realtime count for a two-level (company + lead) ICP does not exist in the API — only the database one does.',
+            why: 'A realtime count for a two-level (company + lead) ICP does not exist in the API; only the database one does.',
             options: [
               'Drop mode:"realtime" to get the free cached count for the same two-level ICP.',
               'Count the two levels separately: count_companies for the accounts, then count_leads without company_filters for the people.',
@@ -1209,7 +1222,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
             ...(count === 0
               ? {
                   advice:
-                    'Zero matches. Do NOT run a paid search — loosen a filter (drop the narrowest one first) or try mode:"realtime", which has a bigger index and more filters.',
+                    'Zero matches. Do NOT run a paid search. Loosen a filter (drop the narrowest one first) or try mode:"realtime", which has a bigger index and more filters.',
                 }
               : {}),
           });
@@ -1225,7 +1238,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
               why: `These filters do not exist in the free cached index: ${blocked.join(', ')}.`,
               options: [
                 `Drop ${blocked.join('/')} and call again for a free count.`,
-                `Call again with mode:"realtime" to count live — that costs about $${round(book.prices.count_realtime)} for the count alone, before any rows.`,
+                `Call again with mode:"realtime" to count live. That costs about $${round(book.prices.count_realtime)} for the count alone, before any rows.`,
               ],
             });
           }
@@ -1293,7 +1306,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
             cost: receipt('count_database', data),
             next_step_estimate: estimateBlock(book, 'database', count),
             ...(count === 0
-              ? { advice: 'Zero matches — loosen a filter or try mode:"realtime" before paying for anything.' }
+              ? { advice: 'Zero matches. Loosen a filter or try mode:"realtime" before paying for anything.' }
               : {}),
           });
         } catch (err: any) {
@@ -1308,7 +1321,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
               why: `These filters do not exist in the free cached index: ${blocked.join(', ')}.`,
               options: [
                 `Drop ${blocked.join('/')} and call again for a free count.`,
-                `Call again with mode:"realtime" — about $${round(book.prices.count_realtime)} for the count alone.`,
+                `Call again with mode:"realtime": about $${round(book.prices.count_realtime)} for the count alone.`,
               ],
             });
           }
@@ -1364,7 +1377,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           const book = await priceBook(Authorization, headers);
           out.your_prices_usd = book.prices;
           out.prices_source = book.account_specific
-            ? `account tier ${book.tier ?? '?'} — these are the numbers to quote to the user`
+            ? `account tier ${book.tier ?? '?'}: these are the numbers to quote to the user`
             : 'published list prices (could not read the account tier)';
         }
         const n = Number(args?.include_transactions ?? 0);
@@ -1810,12 +1823,12 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           'A single LinkedIn person reference: profile URL of any flavour (including /in/ACwAA… and /sales/lead/…), a public identifier, an obfuscated id (ACwAA… or ACoAA…) or an urn. Matched case-insensitively.',
         )
         .optional(),
-      id: z.string().describe('Alias for `url` — same accepted values. Use whichever reads better.').optional(),
+      id: z.string().describe('Alias for `url`, with the same accepted values. Use whichever reads better.').optional(),
       profiles: z
         .array(z.string())
         .max(50)
         .describe(
-          'Batch mode: 1–50 references, mixed freely. One row per input, in input order, each either a resolved profile or {input, error}. Duplicates are billed per row — deduplicate first.',
+          'Batch mode: 1–50 references, mixed freely. One row per input, in input order, each either a resolved profile or {input, error}. Duplicates are billed per row, so deduplicate first.',
         )
         .optional(),
       compact: compactParam('profile'),
@@ -2340,7 +2353,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         server: 'up',
         version: VERSION,
         api_base: apiBase,
-        cost: { operation: 'health', amount_charged_usd: 0, billed: 'free — no data endpoint is touched' },
+        cost: { operation: 'health', amount_charged_usd: 0, billed: 'free: no data endpoint is touched' },
       };
       let Authorization: string | null = null;
       try {
@@ -2398,7 +2411,7 @@ function estimateBlock(book: PriceBook, mode: 'database' | 'realtime', count: un
   return {
     priced_at: book.account_specific ? `your account tier ${book.tier ?? '?'}` : 'published list prices',
     ...(mode === 'database'
-      ? { thin_search: 'free — search with detail "thin" (the default) costs $0 up to a daily row quota' }
+      ? { thin_search: 'free: search with detail "thin" (the default) costs $0 up to a daily row quota' }
       : {}),
     search_usd_per_row: round(book.prices[searchOp]),
     search_cost_for: Object.fromEntries(rows.map(n => [`${n}_rows`, estimate(book, searchOp, n)])),
