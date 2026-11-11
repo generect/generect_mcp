@@ -1561,10 +1561,13 @@ const ACCOUNT_ME: Route = {
 const apiPrices = (email: number) => ({
   database: { price: 0.005, list_price: 0.02 },
   realtime: { price: 0.03, list_price: 0.04 },
+  enrich_database: { price: 0.006, list_price: 0.02 },
+  enrich_realtime: { price: 0.035, list_price: 0.04 },
   email_finder: { price: email, list_price: 0.02 },
   email_validation: { price: 0.004, list_price: 0.005 },
   phones: { price: 0.35, list_price: 0.4 },
   preview: { price: 0.001, list_price: 0.002 },
+  profile_resolve: { price: 0.0004, list_price: 0.0005 },
 });
 
 test('price book: asks my-tier for api_prices and quotes them over the tier inputs', async () => {
@@ -1578,9 +1581,12 @@ test('price book: asks my-tier for api_prices and quotes them over the tier inpu
   assert.equal(r.your_prices_usd.email_find, 0.011);
   assert.equal(r.your_prices_usd.search_database, 0.005);
   assert.equal(r.your_prices_usd.phone_find, 0.35);
-  // Operations api_prices does not name keep the tier's price.
   assert.equal(r.your_prices_usd.search_realtime, 0.03);
-  assert.equal(r.your_prices_usd.enrich_realtime, 0.04);
+  assert.equal(r.your_prices_usd.count_realtime, 0.03);
+  assert.equal(r.your_prices_usd.enrich_database, 0.006);
+  assert.equal(r.your_prices_usd.enrich_realtime, 0.035);
+  assert.equal(r.your_prices_usd.profile_resolve, 0.0004);
+  assert.equal(r.your_prices_usd.count_database, 0);
   assert.match(r.prices_source, /^account tier 3/);
 });
 
@@ -1591,17 +1597,22 @@ test('price book: a contract account has no tier and is still quoted its own pri
   ]);
   const r = out(await tools.get_balance({}, EXTRA));
   assert.equal(r.your_prices_usd.email_find, 0.01);
+  // Every billable operation is the account's own, enrich included: no list price under that label.
+  assert.equal(r.your_prices_usd.enrich_database, 0.006);
+  assert.equal(r.your_prices_usd.profile_resolve, 0.0004);
   assert.match(r.prices_source, /^account prices \(negotiated/);
 });
 
-test('price book: an API without api_prices still reads a contract block', async () => {
+test('price book: without a tier, prices that do not cover every operation are list prices, said as such', async () => {
+  const partial: any = apiPrices(0.01);
+  delete partial.enrich_database;
   const { tools } = harness([
-    { match: /tiers\/my-tier/, body: { current_tier: null, contract: { label: 'Partner', api_prices: apiPrices(0.009) } } },
+    { match: /tiers\/my-tier/, body: { current_tier: null, contract: { api_prices: apiPrices(0.009) }, api_prices: partial } },
     ACCOUNT_ME,
   ]);
   const r = out(await tools.get_balance({}, EXTRA));
-  assert.equal(r.your_prices_usd.email_find, 0.009);
-  assert.match(r.prices_source, /^account prices/);
+  assert.equal(r.your_prices_usd.email_find, listPrice('email_find'));
+  assert.match(r.prices_source, /^published list prices/);
 });
 
 test('price book: a refused my-tier is still list prices, said as such', async () => {

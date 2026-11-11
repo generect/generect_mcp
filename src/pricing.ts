@@ -82,13 +82,18 @@ const TIER_FIELD_TO_OPS: Record<string, Operation[]> = {
 // unit is charged at, by the conversion the charge itself calls: on a tier, a contract or
 // neither. `service_prices` above are tier coefficients times base prices, an input the
 // charge also reads but not the whole rule, and a contract account has no tier at all.
+// The API prices lead endpoints where leads and companies have separate price fields;
+// one operation here covers both.
 const API_PRICE_TO_OPS: Record<string, Operation[]> = {
   database: ['search_database'],
-  realtime: ['search_realtime'],
+  realtime: ['search_realtime', 'count_realtime'],
+  enrich_database: ['enrich_database'],
+  enrich_realtime: ['enrich_realtime'],
   email_finder: ['email_find'],
   email_validation: ['email_validate'],
   phones: ['phone_find'],
   preview: ['preview'],
+  profile_resolve: ['profile_resolve'],
 };
 
 export interface PriceBook {
@@ -145,11 +150,13 @@ export async function fetchPriceBook(
     if (!res.ok) return FALLBACK_BOOK;
     const data: any = await res.json();
     const svc = data?.current_tier?.service_prices;
-    // An API without PRO-1666 answers api_prices to a contract account only.
-    const api = data?.api_prices ?? data?.contract?.api_prices;
+    const api = data?.api_prices;
     const tiered = Boolean(svc) && typeof svc === 'object';
     const charged = Boolean(api) && typeof api === 'object';
-    if (!tiered && !charged) return FALLBACK_BOOK;
+    // Without a tier (a contract account) nothing else fills a gap, and a list price
+    // must not be quoted as the account's own: all of them, or the honest fallback.
+    const complete = charged && Object.keys(API_PRICE_TO_OPS).every(key => Number.isFinite(Number(api[key]?.price)));
+    if (!tiered && !complete) return FALLBACK_BOOK;
     const prices = { ...LIST_PRICE_USD };
     if (tiered) {
       for (const [field, ops] of Object.entries(TIER_FIELD_TO_OPS)) {
