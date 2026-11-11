@@ -1418,8 +1418,8 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           // A contract account has its own prices and no spend tier (PRO-1666).
           out.prices_source = !book.account_specific
             ? 'published list prices (could not read the account tier)'
-            : book.tier
-              ? `account tier ${book.tier}: these are the numbers to quote to the user`
+            : book.tiered
+              ? `account tier ${book.tier ?? '?'}: these are the numbers to quote to the user`
               : 'account prices (negotiated, no spend tier): these are the numbers to quote to the user';
         }
         const n = Number(args?.include_transactions ?? 0);
@@ -2453,8 +2453,8 @@ function estimateBlock(book: PriceBook, mode: 'database' | 'realtime', count: un
   return {
     priced_at: !book.account_specific
       ? 'published list prices'
-      : book.tier
-        ? `your account tier ${book.tier}`
+      : book.tiered
+        ? `your account tier ${book.tier ?? '?'}`
         : 'your account prices',
     ...(mode === 'database'
       ? { thin_search: 'free: search with detail "thin" (the default) costs $0 up to a daily row quota' }

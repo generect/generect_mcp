@@ -101,6 +101,13 @@ export interface PriceBook {
   /** true when the numbers came from the account's own tier, not the fallback list. */
   account_specific: boolean;
   tier?: string | null;
+  /** On a spend tier (a contract account has none): what the price label says. */
+  tiered?: boolean;
+}
+
+/** A price from the API, or null: only a real non-negative number counts, never null or "" read as $0. */
+function priceOf(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 const FALLBACK_BOOK: PriceBook = { prices: { ...LIST_PRICE_USD }, account_specific: false, tier: null };
@@ -155,25 +162,25 @@ export async function fetchPriceBook(
     const charged = Boolean(api) && typeof api === 'object';
     // Without a tier (a contract account) nothing else fills a gap, and a list price
     // must not be quoted as the account's own: all of them, or the honest fallback.
-    const complete = charged && Object.keys(API_PRICE_TO_OPS).every(key => Number.isFinite(Number(api[key]?.price)));
+    const complete = charged && Object.keys(API_PRICE_TO_OPS).every(key => priceOf(api[key]?.price) !== null);
     if (!tiered && !complete) return FALLBACK_BOOK;
     const prices = { ...LIST_PRICE_USD };
     if (tiered) {
       for (const [field, ops] of Object.entries(TIER_FIELD_TO_OPS)) {
-        const value = Number(svc[field]);
-        if (Number.isFinite(value) && value >= 0) for (const op of ops) prices[op] = value;
+        const value = priceOf(svc[field]);
+        if (value !== null) for (const op of ops) prices[op] = value;
       }
     }
     // The charge's own numbers win over the tier's inputs wherever the API gives them.
     if (charged) {
       for (const [key, ops] of Object.entries(API_PRICE_TO_OPS)) {
-        const value = Number(api[key]?.price);
-        if (Number.isFinite(value) && value >= 0) for (const op of ops) prices[op] = value;
+        const value = priceOf(api[key]?.price);
+        if (value !== null) for (const op of ops) prices[op] = value;
       }
     }
     prices.count_database = 0; // free by contract, whatever the tier says
     prices.search_thin = 0; // same: the thin tier writes no transaction at all
-    const book: PriceBook = { prices, account_specific: true, tier: data?.current_tier?.name ?? null };
+    const book: PriceBook = { prices, account_specific: true, tier: data?.current_tier?.name ?? null, tiered };
     cache.set(key, { book, ts: Date.now() });
     return book;
   } catch {

@@ -1615,6 +1615,32 @@ test('price book: without a tier, prices that do not cover every operation are l
   assert.match(r.prices_source, /^published list prices/);
 });
 
+test('price book: a null or empty price is no price, never $0', async () => {
+  const holes: any = apiPrices(0.01);
+  holes.phones = { price: null, list_price: 0.4 };
+  const { tools } = harness([{ match: /tiers\/my-tier/, body: { current_tier: null, api_prices: holes } }, ACCOUNT_ME]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  // Incomplete without a tier: the honest fallback, not a free phone lookup.
+  assert.equal(r.your_prices_usd.phone_find, listPrice('phone_find'));
+  assert.match(r.prices_source, /^published list prices/);
+  const tiered = harness([
+    { match: /tiers\/my-tier/, body: { current_tier: { name: '2', service_prices: { phones: '' } }, api_prices: holes } },
+    ACCOUNT_ME,
+  ]);
+  const t = out(await tiered.tools.get_balance({}, EXTRA));
+  assert.equal(t.your_prices_usd.phone_find, listPrice('phone_find'));
+  assert.equal(t.your_prices_usd.email_find, 0.01);
+});
+
+test('price book: a tier without a name is still a tier', async () => {
+  const { tools } = harness([
+    { match: /tiers\/my-tier/, body: { current_tier: { name: null, service_prices: TIER.current_tier.service_prices } } },
+    ACCOUNT_ME,
+  ]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  assert.match(r.prices_source, /^account tier \?/);
+});
+
 test('price book: a refused my-tier is still list prices, said as such', async () => {
   const { tools } = harness([
     { match: /tiers\/my-tier/, status: 401, body: { detail: 'Invalid token.' } },
