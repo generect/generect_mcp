@@ -258,8 +258,20 @@ const SCENARIOS = {
         location: 'Berlin, Germany',
         linkedin_url: 'https://www.linkedin.com/in/lena-hoffmann',
         experience: [
-          { title: 'Chief Technology Officer', company_name: 'Klarwerk', started_on: 'Mar 2022', ended_on: null, current: true },
-          { title: 'Head of Platform', company_name: 'N26', started_on: 'Jun 2018', ended_on: 'Feb 2022', current: false },
+          {
+            title: 'Chief Technology Officer',
+            company_name: 'Klarwerk',
+            started_on: 'Mar 2022',
+            ended_on: null,
+            current: true,
+          },
+          {
+            title: 'Head of Platform',
+            company_name: 'N26',
+            started_on: 'Jun 2018',
+            ended_on: 'Feb 2022',
+            current: false,
+          },
           { title: 'Advisor', company_name: 'Zalando', started_on: 'Sep 2014', ended_on: null, current: false },
         ],
       },

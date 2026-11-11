@@ -1607,7 +1607,10 @@ test('price book: without a tier, prices that do not cover every operation are l
   const partial: any = apiPrices(0.01);
   delete partial.enrich_database;
   const { tools } = harness([
-    { match: /tiers\/my-tier/, body: { current_tier: null, contract: { api_prices: apiPrices(0.009) }, api_prices: partial } },
+    {
+      match: /tiers\/my-tier/,
+      body: { current_tier: null, contract: { api_prices: apiPrices(0.009) }, api_prices: partial },
+    },
     ACCOUNT_ME,
   ]);
   const r = out(await tools.get_balance({}, EXTRA));
@@ -1624,7 +1627,10 @@ test('price book: a null or empty price is no price, never $0', async () => {
   assert.equal(r.your_prices_usd.phone_find, listPrice('phone_find'));
   assert.match(r.prices_source, /^published list prices/);
   const tiered = harness([
-    { match: /tiers\/my-tier/, body: { current_tier: { name: '2', service_prices: { phones: '' } }, api_prices: holes } },
+    {
+      match: /tiers\/my-tier/,
+      body: { current_tier: { name: '2', service_prices: { phones: '' } }, api_prices: holes },
+    },
     ACCOUNT_ME,
   ]);
   const t = out(await tiered.tools.get_balance({}, EXTRA));
@@ -1632,9 +1638,38 @@ test('price book: a null or empty price is no price, never $0', async () => {
   assert.equal(t.your_prices_usd.email_find, 0.01);
 });
 
+test('price book: a price written as a decimal string still counts, as before 0.13.3', async () => {
+  const { tools } = harness([
+    {
+      match: /tiers\/my-tier/,
+      body: {
+        current_tier: { name: '3', service_prices: { api_cached: '0.0100', phones: 'n/a', api_preview: '1E-3' } },
+      },
+    },
+    ACCOUNT_ME,
+  ]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  assert.equal(r.your_prices_usd.search_database, 0.01);
+  assert.equal(r.your_prices_usd.preview, 0.001);
+  assert.equal(r.your_prices_usd.phone_find, listPrice('phone_find'));
+  const strings: any = Object.fromEntries(
+    Object.entries(apiPrices(0.01)).map(([key, value]) => [key, { ...value, price: String(value.price) }]),
+  );
+  const contract = harness([
+    { match: /tiers\/my-tier/, body: { current_tier: null, api_prices: strings } },
+    ACCOUNT_ME,
+  ]);
+  const c = out(await contract.tools.get_balance({}, EXTRA));
+  assert.equal(c.your_prices_usd.email_find, 0.01);
+  assert.match(c.prices_source, /^account prices/);
+});
+
 test('price book: a tier without a name is still a tier', async () => {
   const { tools } = harness([
-    { match: /tiers\/my-tier/, body: { current_tier: { name: null, service_prices: TIER.current_tier.service_prices } } },
+    {
+      match: /tiers\/my-tier/,
+      body: { current_tier: { name: null, service_prices: TIER.current_tier.service_prices } },
+    },
     ACCOUNT_ME,
   ]);
   const r = out(await tools.get_balance({}, EXTRA));
@@ -1642,17 +1677,21 @@ test('price book: a tier without a name is still a tier', async () => {
 });
 
 test('price book: a refused my-tier is still list prices, said as such', async () => {
-  const { tools } = harness([
-    { match: /tiers\/my-tier/, status: 401, body: { detail: 'Invalid token.' } },
-    ACCOUNT_ME,
-  ]);
+  const { tools } = harness([{ match: /tiers\/my-tier/, status: 401, body: { detail: 'Invalid token.' } }, ACCOUNT_ME]);
   const r = out(await tools.get_balance({}, EXTRA));
   assert.equal(r.your_prices_usd.email_find, listPrice('email_find'));
   assert.match(r.prices_source, /^published list prices/);
 });
 
 test('preview_leads: a preview row (first_name, last_name, title) comes back with a full name and a job title', async () => {
-  const row = { id: 'ACwAAP1', first_name: 'Ana', last_name: 'Silva', title: 'CTO', company_name: 'Klarwerk', location: 'Berlin, Germany' };
+  const row = {
+    id: 'ACwAAP1',
+    first_name: 'Ana',
+    last_name: 'Silva',
+    title: 'CTO',
+    company_name: 'Klarwerk',
+    location: 'Berlin, Germany',
+  };
   const { tools } = harness([
     TIER_ROUTE,
     { match: /preview\/leads/, body: { data: { leads: [row] }, meta: { amount_charged: 0.002 } } },
@@ -1664,8 +1703,22 @@ test('preview_leads: a preview row (first_name, last_name, title) comes back wit
 });
 
 const JOBS = [
-  { job_title: 'Founder, CEO', company_name: 'Generect', job_started_on: 'Nov 2021', job_ended_on: null, job_still_working: true, company_description: 'x'.repeat(2000), job_description: 'y'.repeat(500) },
-  { job_title: 'Head of Growth', company_name: 'Acme', job_started_on: 'Mar 2018', job_ended_on: 'Oct 2021', job_still_working: false },
+  {
+    job_title: 'Founder, CEO',
+    company_name: 'Generect',
+    job_started_on: 'Nov 2021',
+    job_ended_on: null,
+    job_still_working: true,
+    company_description: 'x'.repeat(2000),
+    job_description: 'y'.repeat(500),
+  },
+  {
+    job_title: 'Head of Growth',
+    company_name: 'Acme',
+    job_started_on: 'Mar 2018',
+    job_ended_on: 'Oct 2021',
+    job_still_working: false,
+  },
 ];
 
 test('enrich_lead: the summary carries a short work history for the profile card', async () => {
@@ -1688,7 +1741,10 @@ test('enrich_lead: the summary carries a short work history for the profile card
 test('get_lead_by_url: the same work history', async () => {
   const { tools } = harness([
     TIER_ROUTE,
-    { match: /enrich\/(database|realtime)\/lead/, body: { data: { ...LEAD_ROW, jobs: JOBS }, meta: { amount_charged: 0.02 } } },
+    {
+      match: /enrich\/(database|realtime)\/lead/,
+      body: { data: { ...LEAD_ROW, jobs: JOBS }, meta: { amount_charged: 0.02 } },
+    },
   ]);
   const r = out(await tools.get_lead_by_url({ url: 'https://linkedin.com/in/jordan' }, EXTRA));
   assert.equal(r.lead.experience.length, 2);
@@ -1703,6 +1759,9 @@ test('filter texts: locations as Generect lists them, sub_industries as the API 
     String((z.toJSONSchema(shapes[tool]) as any).properties?.[field]?.description ?? '');
   assert.match(describe('count_leads', 'locations'), /"Berlin, Germany"/);
   assert.ok(!/\["United States","Berlin"\]/.test(describe('count_leads', 'locations')));
-  assert.match(describe('search_companies', 'sub_industries'), /Default false: each selected industry also matches its sub-industries/);
+  assert.match(
+    describe('search_companies', 'sub_industries'),
+    /Default false: each selected industry also matches its sub-industries/,
+  );
   assert.match(describe('search_companies', 'sub_industries'), /true: only the industries named/);
 });

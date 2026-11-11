@@ -105,9 +105,18 @@ export interface PriceBook {
   tiered?: boolean;
 }
 
-/** A price from the API, or null: only a real non-negative number counts, never null or "" read as $0. */
+/**
+ * A price from the API, or null. A non-negative number, or one written as a decimal
+ * string (as a Django Decimal can be sent): never null, "" or junk read as $0.
+ */
 function priceOf(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  const number =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\s*\d+(\.\d+)?(e[-+]?\d+)?\s*$/i.test(value)
+        ? Number(value)
+        : NaN;
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 const FALLBACK_BOOK: PriceBook = { prices: { ...LIST_PRICE_USD }, account_specific: false, tier: null };
