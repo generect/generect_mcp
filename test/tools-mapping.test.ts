@@ -1549,3 +1549,123 @@ test('webhook input schemas accept what the API accepts, and say so', async () =
     assert.doesNotMatch(configs[name].description, /HTTPS/, `${name} does not claim HTTPS only`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// PRO-1666 QA (Claude connector, 09.11.2026)
+// ---------------------------------------------------------------------------
+
+const ACCOUNT_ME: Route = {
+  match: /accounts\/me/,
+  body: { data: { email: 'a@b.com', credits: { balance: 9.6, used_this_month: 0.4 } } },
+};
+const apiPrices = (email: number) => ({
+  database: { price: 0.005, list_price: 0.02 },
+  realtime: { price: 0.03, list_price: 0.04 },
+  email_finder: { price: email, list_price: 0.02 },
+  email_validation: { price: 0.004, list_price: 0.005 },
+  phones: { price: 0.35, list_price: 0.4 },
+  preview: { price: 0.001, list_price: 0.002 },
+});
+
+test('price book: asks my-tier for api_prices and quotes them over the tier inputs', async () => {
+  const { tools, calls } = harness([
+    { match: /tiers\/my-tier/, body: { ...TIER, api_prices: apiPrices(0.011) } },
+    ACCOUNT_ME,
+  ]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  assert.ok(calls.some(c => c.url === 'https://api.test/api/auth/tiers/my-tier/?include=api_prices'));
+  // The charge's own number, not tier 3's api_email_finder input (0.02).
+  assert.equal(r.your_prices_usd.email_find, 0.011);
+  assert.equal(r.your_prices_usd.search_database, 0.005);
+  assert.equal(r.your_prices_usd.phone_find, 0.35);
+  // Operations api_prices does not name keep the tier's price.
+  assert.equal(r.your_prices_usd.search_realtime, 0.03);
+  assert.equal(r.your_prices_usd.enrich_realtime, 0.04);
+  assert.match(r.prices_source, /^account tier 3/);
+});
+
+test('price book: a contract account has no tier and is still quoted its own prices', async () => {
+  const { tools } = harness([
+    { match: /tiers\/my-tier/, body: { current_tier: null, spend_tiers: false, api_prices: apiPrices(0.01) } },
+    ACCOUNT_ME,
+  ]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  assert.equal(r.your_prices_usd.email_find, 0.01);
+  assert.match(r.prices_source, /^account prices \(negotiated/);
+});
+
+test('price book: an API without api_prices still reads a contract block', async () => {
+  const { tools } = harness([
+    { match: /tiers\/my-tier/, body: { current_tier: null, contract: { label: 'Partner', api_prices: apiPrices(0.009) } } },
+    ACCOUNT_ME,
+  ]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  assert.equal(r.your_prices_usd.email_find, 0.009);
+  assert.match(r.prices_source, /^account prices/);
+});
+
+test('price book: a refused my-tier is still list prices, said as such', async () => {
+  const { tools } = harness([
+    { match: /tiers\/my-tier/, status: 401, body: { detail: 'Invalid token.' } },
+    ACCOUNT_ME,
+  ]);
+  const r = out(await tools.get_balance({}, EXTRA));
+  assert.equal(r.your_prices_usd.email_find, listPrice('email_find'));
+  assert.match(r.prices_source, /^published list prices/);
+});
+
+test('preview_leads: a preview row (first_name, last_name, title) comes back with a full name and a job title', async () => {
+  const row = { id: 'ACwAAP1', first_name: 'Ana', last_name: 'Silva', title: 'CTO', company_name: 'Klarwerk', location: 'Berlin, Germany' };
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /preview\/leads/, body: { data: { leads: [row] }, meta: { amount_charged: 0.002 } } },
+  ]);
+  const r = out(await tools.preview_leads({ job_titles: ['CTO'], limit_by: 1 }, EXTRA));
+  assert.equal(r.leads[0].full_name, 'Ana Silva');
+  assert.equal(r.leads[0].job_title, 'CTO');
+  assert.equal(r.leads[0].id, 'ACwAAP1');
+});
+
+const JOBS = [
+  { job_title: 'Founder, CEO', company_name: 'Generect', job_started_on: 'Nov 2021', job_ended_on: null, job_still_working: true, company_description: 'x'.repeat(2000), job_description: 'y'.repeat(500) },
+  { job_title: 'Head of Growth', company_name: 'Acme', job_started_on: 'Mar 2018', job_ended_on: 'Oct 2021', job_still_working: false },
+];
+
+test('enrich_lead: the summary carries a short work history for the profile card', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /enrich\/database\/lead/, body: { data: { ...LEAD_ROW, jobs: JOBS }, meta: { amount_charged: 0.02 } } },
+  ]);
+  const r = out(await tools.enrich_lead({ linkedin_url: 'https://linkedin.com/in/jordan', mode: 'database' }, EXTRA));
+  assert.deepEqual(r.lead.experience, [
+    { title: 'Founder, CEO', company_name: 'Generect', started_on: 'Nov 2021', ended_on: null, current: true },
+    { title: 'Head of Growth', company_name: 'Acme', started_on: 'Mar 2018', ended_on: 'Oct 2021', current: false },
+  ]);
+  // Titles and dates only: the descriptions stay out of the model's context.
+  assert.ok(!JSON.stringify(r.lead).includes('xxxx'));
+  // compact: false is the record as the API sent it.
+  const raw = out(await tools.enrich_lead({ id: 'ACwAAA1', mode: 'database', compact: false }, EXTRA));
+  assert.equal(raw.lead.jobs.length, 2);
+});
+
+test('get_lead_by_url: the same work history', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    { match: /enrich\/(database|realtime)\/lead/, body: { data: { ...LEAD_ROW, jobs: JOBS }, meta: { amount_charged: 0.02 } } },
+  ]);
+  const r = out(await tools.get_lead_by_url({ url: 'https://linkedin.com/in/jordan' }, EXTRA));
+  assert.equal(r.lead.experience.length, 2);
+});
+
+test('filter texts: locations as Generect lists them, sub_industries as the API does it', async () => {
+  const shapes: Record<string, any> = {};
+  const server: any = { registerTool: (name: string, config: any) => (shapes[name] = config.inputSchema) };
+  registerTools(server, (async () => new Response('{}')) as any, 'https://api.test', '');
+  // As clients see it: the published JSON Schema.
+  const describe = (tool: string, field: string) =>
+    String((z.toJSONSchema(shapes[tool]) as any).properties?.[field]?.description ?? '');
+  assert.match(describe('count_leads', 'locations'), /"Berlin, Germany"/);
+  assert.ok(!/\["United States","Berlin"\]/.test(describe('count_leads', 'locations')));
+  assert.match(describe('search_companies', 'sub_industries'), /Default false: each selected industry also matches its sub-industries/);
+  assert.match(describe('search_companies', 'sub_industries'), /true: only the industries named/);
+});

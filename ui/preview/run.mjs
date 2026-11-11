@@ -160,6 +160,35 @@ const SCENARIOS = {
     result: sc({ returned: 8, results_count: 1284, mode: 'database', leads: LEADS, cost: { amount_charged_usd: 0 } }),
     flow: 'no-price',
   },
+  // PRO-1666 QA: preview rows carry first_name, last_name and title (compact: false shows them raw).
+  'preview-rows': {
+    width: 1100,
+    height: 720,
+    negotiated: true,
+    toolName: 'preview_leads',
+    args: ARGS,
+    result: sc({
+      returned: 8,
+      results_count: 1284,
+      mode: 'preview',
+      leads: LEADS.map(({ full_name, job_title, ...rest }) => {
+        const [first_name, ...last] = full_name.split(' ');
+        return { ...rest, first_name, last_name: last.join(' '), title: job_title };
+      }),
+      cost: { amount_charged_usd: 0.016 },
+    }),
+    flow: 'preview-names',
+  },
+  // A contract account: its own prices and no spend tier. The confirm step names a total.
+  'leads-negotiated': {
+    width: 1100,
+    height: 720,
+    negotiated: true,
+    toolName: 'search_leads',
+    args: ARGS,
+    result: sc({ returned: 8, results_count: 1284, mode: 'database', leads: LEADS, cost: { amount_charged_usd: 0 } }),
+    flow: 'priced',
+  },
   'preview-count': {
     toolName: 'preview_leads',
     args: { ...ARGS, count_only: true },
@@ -212,6 +241,30 @@ const SCENARIOS = {
       },
     }),
     flow: 'profile-email',
+  },
+  // PRO-1666 QA: enrich_lead's summary now carries the work history the timeline draws.
+  'profile-summary': {
+    toolName: 'enrich_lead',
+    args: { linkedin_url: 'https://www.linkedin.com/in/lena-hoffmann' },
+    result: sc({
+      found: true,
+      mode: 'database',
+      cost: { amount_charged_usd: 0.02 },
+      lead: {
+        id: 'ld_1000',
+        full_name: 'Lena Hoffmann',
+        job_title: 'Chief Technology Officer',
+        company_name: 'Klarwerk',
+        location: 'Berlin, Germany',
+        linkedin_url: 'https://www.linkedin.com/in/lena-hoffmann',
+        experience: [
+          { title: 'Chief Technology Officer', company_name: 'Klarwerk', started_on: 'Mar 2022', ended_on: null, current: true },
+          { title: 'Head of Platform', company_name: 'N26', started_on: 'Jun 2018', ended_on: 'Feb 2022', current: false },
+          { title: 'Advisor', company_name: 'Zalando', started_on: 'Sep 2014', ended_on: null, current: false },
+        ],
+      },
+    }),
+    flow: 'timeline',
   },
   balance: {
     toolName: 'get_balance',
@@ -283,7 +336,11 @@ for (const [name, s] of Object.entries(SCENARIOS)) {
       if (s.balanceFails) throw new Error('get_balance unavailable');
       return sc({
         your_prices_usd: { email_find: 0.02 },
-        prices_source: s.listPricesOnly ? 'published list prices (could not read the account tier)' : 'account tier 2',
+        prices_source: s.listPricesOnly
+          ? 'published list prices (could not read the account tier)'
+          : s.negotiated
+            ? 'account prices (negotiated, no spend tier): these are the numbers to quote to the user'
+            : 'account tier 2',
         cost: { amount_charged_usd: 0 },
       });
     }
@@ -360,6 +417,34 @@ for (const [name, s] of Object.entries(SCENARIOS)) {
     if (!/Confirm · 8 people/.test(label) || /\$/.test(label) || !/Could not read your email price/.test(status))
       errors.push(`no-price confirm wrong: "${label}" / "${status}"`);
     await page.locator('.card').screenshot({ path: join(SHOTS, `${name}-confirm.png`) });
+  }
+  if (s.flow === 'preview-names' || s.flow === 'priced') {
+    if (s.flow === 'preview-names') {
+      const list = await frame.locator('.rows').innerText();
+      if (/Unnamed/.test(list) || !/Lena Hoffmann/.test(list) || !/Chief Technology Officer · Klarwerk/.test(list))
+        errors.push(`preview list wrong: ${list.slice(0, 160)}`);
+    }
+    await frame.getByRole('button', { name: /Open all/ }).click();
+    await page.waitForTimeout(200);
+    if (s.flow === 'preview-names') {
+      const cells = await frame.locator('tbody tr').first().locator('td').allInnerTexts();
+      if (cells[1] !== 'Lena Hoffmann' || cells[2] !== 'Chief Technology Officer')
+        errors.push(`preview table row ${JSON.stringify(cells.slice(1, 3))}`);
+    }
+    await frame.locator('input[data-action="toggle-all"]').check();
+    await frame.getByRole('button', { name: /Find emails for/ }).click();
+    await page.waitForTimeout(300);
+    const label = await frame.locator('[data-action="confirm-emails"]').innerText();
+    const status = await frame.locator('.bar .status').innerText();
+    if (!/Confirm · up to \$0\.16/.test(label) || /Could not read/.test(status))
+      errors.push(`account price not shown: "${label}" / "${status}"`);
+    await page.locator('.card').screenshot({ path: join(SHOTS, `${name}-confirm.png`) });
+  }
+  if (s.flow === 'timeline') {
+    const text = await frame.locator('.timeline').innerText();
+    const rows = text.split('\n').filter(Boolean).join(' | ');
+    if (!/2022 – now/.test(text) || !/2018 – 2022/.test(text) || /2014 – now/.test(text) || !/2014/.test(text))
+      errors.push(`timeline wrong: ${rows}`);
   }
   if (s.flow === 'profile-email') {
     await frame.getByRole('button', { name: /Find work email/ }).click();

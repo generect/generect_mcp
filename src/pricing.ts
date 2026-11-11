@@ -78,6 +78,19 @@ const TIER_FIELD_TO_OPS: Record<string, Operation[]> = {
   api_profile_resolve: ['profile_resolve'],
 };
 
+// my-tier `api_prices` (PRO-1666) -> our operations. Per API v1 operation, the price one
+// unit is charged at, by the conversion the charge itself calls: on a tier, a contract or
+// neither. `service_prices` above are tier coefficients times base prices, an input the
+// charge also reads but not the whole rule, and a contract account has no tier at all.
+const API_PRICE_TO_OPS: Record<string, Operation[]> = {
+  database: ['search_database'],
+  realtime: ['search_realtime'],
+  email_finder: ['email_find'],
+  email_validation: ['email_validate'],
+  phones: ['phone_find'],
+  preview: ['preview'],
+};
+
 export interface PriceBook {
   prices: Record<Operation, number>;
   /** true when the numbers came from the account's own tier, not the fallback list. */
@@ -124,7 +137,7 @@ export async function fetchPriceBook(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetcher(`${apiBase}/api/auth/tiers/my-tier/`, {
+    const res = await fetcher(`${apiBase}/api/auth/tiers/my-tier/?include=api_prices`, {
       method: 'GET',
       headers: { ...headers, Authorization: authorization },
       signal: controller.signal,
@@ -132,11 +145,24 @@ export async function fetchPriceBook(
     if (!res.ok) return FALLBACK_BOOK;
     const data: any = await res.json();
     const svc = data?.current_tier?.service_prices;
-    if (!svc || typeof svc !== 'object') return FALLBACK_BOOK;
+    // An API without PRO-1666 answers api_prices to a contract account only.
+    const api = data?.api_prices ?? data?.contract?.api_prices;
+    const tiered = Boolean(svc) && typeof svc === 'object';
+    const charged = Boolean(api) && typeof api === 'object';
+    if (!tiered && !charged) return FALLBACK_BOOK;
     const prices = { ...LIST_PRICE_USD };
-    for (const [field, ops] of Object.entries(TIER_FIELD_TO_OPS)) {
-      const value = Number(svc[field]);
-      if (Number.isFinite(value) && value >= 0) for (const op of ops) prices[op] = value;
+    if (tiered) {
+      for (const [field, ops] of Object.entries(TIER_FIELD_TO_OPS)) {
+        const value = Number(svc[field]);
+        if (Number.isFinite(value) && value >= 0) for (const op of ops) prices[op] = value;
+      }
+    }
+    // The charge's own numbers win over the tier's inputs wherever the API gives them.
+    if (charged) {
+      for (const [key, ops] of Object.entries(API_PRICE_TO_OPS)) {
+        const value = Number(api[key]?.price);
+        if (Number.isFinite(value) && value >= 0) for (const op of ops) prices[op] = value;
+      }
     }
     prices.count_database = 0; // free by contract, whatever the tier says
     prices.search_thin = 0; // same: the thin tier writes no transaction at all

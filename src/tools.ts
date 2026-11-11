@@ -793,7 +793,11 @@ function clampLimit(body: Record<string, unknown>): number {
 function compactLead(lead: any) {
   return {
     id: lead.id ?? lead.lead_id ?? lead.sales_id ?? null,
-    full_name: lead.full_name ?? lead.unformatted_full_name ?? null,
+    // Preview rows carry first_name and last_name only (PRO-1666 QA: the card said "Unnamed").
+    full_name:
+      lead.full_name ??
+      lead.unformatted_full_name ??
+      ([lead.first_name, lead.last_name].filter(Boolean).join(' ') || null),
     first_name: lead.first_name ?? null,
     last_name: lead.last_name ?? null,
     job_title: lead.job_title ?? lead.title ?? lead.raw_job_title ?? null,
@@ -809,6 +813,26 @@ function compactLead(lead: any) {
       lead.location_name ??
       ([lead.location_city, lead.location_country].filter(Boolean).join(', ') || null),
     linkedin_url: lead.linkedin_url ?? null,
+  };
+}
+
+/**
+ * One person's summary: the row fields plus a short work history (PRO-1666 QA: the
+ * profile card has an experience timeline, and the summary had no jobs to put in it).
+ * Titles, companies and dates only; the raw jobs also carry long company and job
+ * descriptions that would cost the model far more than the card needs.
+ */
+function compactPerson(lead: any) {
+  const jobs: any[] = Array.isArray(lead.jobs) ? lead.jobs : [];
+  return {
+    ...compactLead(lead),
+    experience: jobs.slice(0, 10).map(job => ({
+      title: job.job_title ?? job.title ?? job.raw_job_title ?? null,
+      company_name: job.company_name ?? job.raw_company_name ?? null,
+      started_on: job.job_started_on ?? job.started_on ?? null,
+      ended_on: job.job_ended_on ?? job.ended_on ?? null,
+      current: job.job_still_working ?? job.current ?? null,
+    })),
   };
 }
 
@@ -878,11 +902,19 @@ const LEAD_FILTERS = {
     .optional(),
   locations: z
     .array(z.string())
-    .describe('Where the lead lives: matches cities, states and countries, e.g. ["United States","Berlin"].')
+    .describe(
+      'Where the lead lives, as Generect lists places: a country ("United States"), a state or region, or a city with its country ("Berlin, Germany"). A bare city name such as "Berlin" names several places and is refused with HTTP 400 "This location is not listed".',
+    )
     .optional(),
-  exclude_locations: z.array(z.string()).describe('Lead locations to exclude.').optional(),
-  company_locations: z.array(z.string()).describe("HQ location of the lead's current employer.").optional(),
-  exclude_company_locations: z.array(z.string()).describe('Employer HQ locations to exclude.').optional(),
+  exclude_locations: z.array(z.string()).describe('Lead locations to exclude, written as in locations.').optional(),
+  company_locations: z
+    .array(z.string())
+    .describe('HQ location of the lead\'s current employer, written as in locations ("Berlin, Germany").')
+    .optional(),
+  exclude_company_locations: z
+    .array(z.string())
+    .describe('Employer HQ locations to exclude, written as in locations.')
+    .optional(),
   company_industries: z
     .array(z.string())
     .describe(
@@ -984,7 +1016,9 @@ const COMPANY_FILTERS = {
   exclude_industries: z.array(z.string()).describe('Industries to exclude.').optional(),
   sub_industries: z
     .boolean()
-    .describe('Expand each selected industry to its sub-industries as well (broadens the match).')
+    .describe(
+      'How industries maps onto the LinkedIn industry tree. Default false: each selected industry also matches its sub-industries ("Software Development" includes "Computer Games"). true: only the industries named.',
+    )
     .optional(),
   headcounts: z
     .array(z.string())
@@ -992,8 +1026,13 @@ const COMPANY_FILTERS = {
       'Size buckets. Allowed ONLY: "1-10","11-50","51-200","201-500","501-1000","1001-5000","5001-10000","10 000+".',
     )
     .optional(),
-  locations: z.array(z.string()).describe('HQ locations: cities, states or countries.').optional(),
-  exclude_locations: z.array(z.string()).describe('HQ locations to exclude.').optional(),
+  locations: z
+    .array(z.string())
+    .describe(
+      'HQ locations, as Generect lists places: a country, a state or region, or a city with its country ("Berlin, Germany"). A bare city name is refused with HTTP 400 "This location is not listed".',
+    )
+    .optional(),
+  exclude_locations: z.array(z.string()).describe('HQ locations to exclude, written as in locations.').optional(),
   company_types: z
     .array(z.string())
     .describe('Company types: "Public Company","Privately Held","Non Profit","Government Agency","Educational", …')
@@ -1376,9 +1415,12 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
         if (args?.include_prices !== false) {
           const book = await priceBook(Authorization, headers);
           out.your_prices_usd = book.prices;
-          out.prices_source = book.account_specific
-            ? `account tier ${book.tier ?? '?'}: these are the numbers to quote to the user`
-            : 'published list prices (could not read the account tier)';
+          // A contract account has its own prices and no spend tier (PRO-1666).
+          out.prices_source = !book.account_specific
+            ? 'published list prices (could not read the account tier)'
+            : book.tier
+              ? `account tier ${book.tier}: these are the numbers to quote to the user`
+              : 'account prices (negotiated, no spend tier): these are the numbers to quote to the user';
         }
         const n = Number(args?.include_transactions ?? 0);
         if (n > 0) {
@@ -1721,7 +1763,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           found: !!lead,
           mode,
           cost: receipt(mode === 'database' ? 'enrich_database' : 'enrich_realtime', data),
-          lead: lead && args?.compact !== false ? compactLead(lead) : lead,
+          lead: lead && args?.compact !== false ? compactPerson(lead) : lead,
         });
       } catch (err: unknown) {
         return apiError(err);
@@ -1803,7 +1845,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           mode,
           deprecated_params_ignored: legacyUsed(args),
           cost: receipt(mode === 'database' ? 'enrich_database' : 'enrich_realtime', data),
-          lead: lead && args?.compact !== false ? compactLead(lead) : lead,
+          lead: lead && args?.compact !== false ? compactPerson(lead) : lead,
         });
       } catch (err: unknown) {
         return apiError(err);
@@ -2409,7 +2451,11 @@ function estimateBlock(book: PriceBook, mode: 'database' | 'realtime', count: un
   const rows = [10, 25, 100];
   const total = typeof count === 'number' ? count : null;
   return {
-    priced_at: book.account_specific ? `your account tier ${book.tier ?? '?'}` : 'published list prices',
+    priced_at: !book.account_specific
+      ? 'published list prices'
+      : book.tier
+        ? `your account tier ${book.tier}`
+        : 'your account prices',
     ...(mode === 'database'
       ? { thin_search: 'free: search with detail "thin" (the default) costs $0 up to a daily row quota' }
       : {}),

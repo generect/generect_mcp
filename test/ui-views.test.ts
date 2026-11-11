@@ -292,3 +292,34 @@ test('balance shows grants beside the wallet, not added in (PRO-1749)', () => {
   assert.doesNotMatch(balanceView({ balance_usd: 12, grants_usd: 0 }), /Bonus and plan credit/);
   assert.doesNotMatch(balanceView({ balance_usd: 12 }), /Bonus and plan credit/);
 });
+
+// PRO-1666 QA (Claude connector, 09.11.2026)
+
+test('leads from preview: names and titles from first_name, last_name and title', () => {
+  const preview = { leads: [{ id: 'p1', first_name: 'Ana', last_name: 'Silva', title: 'CTO', company_name: 'Klarwerk' }], results_count: 1 };
+  const card = leadsView({}, preview, ui());
+  assert.match(card, /Ana Silva/);
+  assert.ok(!card.includes('Unnamed'));
+  assert.match(card, /CTO · Klarwerk/);
+  const table = leadsView({}, preview, ui({ expanded: true } as any));
+  assert.match(table, /<td>Ana Silva<\/td><td>CTO<\/td>/);
+  assert.match(leadsCsv(preview.leads as any, {}), /Ana Silva,CTO,Klarwerk/);
+  // A row with neither still says so.
+  assert.match(leadsView({}, { leads: [{ id: 'p2' }] }, ui()), /Unnamed/);
+});
+
+test('profile timeline: the summary keys, the raw API keys, and no "now" for a job that ended', () => {
+  const html = (experience: any[]) => profileView('enrich_lead', { found: true, lead: { id: 'x', full_name: 'A B', experience } }, {});
+  assert.match(html([{ title: 'Founder, CEO', company_name: 'Generect', started_on: 'Nov 2021', ended_on: null, current: true }]), /2021 – now/);
+  assert.match(html([{ title: 'Head of Growth', company_name: 'Acme', started_on: 'Mar 2018', ended_on: 'Oct 2021', current: false }]), /2018 – 2021/);
+  const ended = html([{ title: 'Advisor', company_name: 'Co', started_on: 'Jan 2016', ended_on: null, current: false }]);
+  assert.match(ended, />2016</);
+  assert.ok(!ended.includes('now'));
+  const raw = profileView('enrich_lead', { found: true, lead: { id: 'x', full_name: 'A B', jobs: [{ job_title: 'CEO', company_name: 'Generect', job_started_on: 'Nov 2021', job_still_working: true }] } }, {});
+  assert.match(raw, /2021 – now/);
+});
+
+test('balance: a contract account\'s own prices are "Your prices"', () => {
+  const p = { your_prices_usd: { email_find: 0.01 } };
+  assert.match(balanceView({ balance_usd: 5, ...p, prices_source: 'account prices (negotiated, no spend tier): quote these' }), /Your prices/);
+});
