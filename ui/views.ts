@@ -473,6 +473,7 @@ export function profileView(
   const exps: any[] = (pick(l, 'experiences', 'experience', 'jobs') as any[]) ?? [];
   const timeline = Array.isArray(exps)
     ? exps
+        .filter(e => e && typeof e === 'object')
         .slice(0, 4)
         .map(e => {
           // The summary's started_on/ended_on/current (PRO-1666) or the raw API job's job_* keys.

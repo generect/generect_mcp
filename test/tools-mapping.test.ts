@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { registerTools } from '../src/tools.ts';
+import { registerResources } from '../src/resources.ts';
 import { ctxWith } from './helpers-ctx.ts';
 import { resetPriceBookCache, listPrice, type Operation } from '../src/pricing.ts';
 import { TOOL_META, TOOL_ORDER } from '../src/tool-meta.ts';
@@ -1750,6 +1751,44 @@ test('enrich_lead: the summary carries a short work history for the profile card
   // compact: false is the record as the API sent it.
   const raw = out(await tools.enrich_lead({ id: 'ACwAAA1', mode: 'database', compact: false }, EXTRA));
   assert.equal(raw.lead.jobs.length, 2);
+});
+
+test('enrich_lead: a null or a string in jobs is skipped, never an error after the charge', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    {
+      match: /enrich\/database\/lead/,
+      body: { data: { ...LEAD_ROW, jobs: [null, 'x', JOBS[0]] }, meta: { amount_charged: 0.02 } },
+    },
+  ]);
+  const r = out(await tools.enrich_lead({ linkedin_url: 'https://linkedin.com/in/jordan', mode: 'database' }, EXTRA));
+  assert.equal(r.cost.amount_charged_usd, 0.02);
+  assert.deepEqual(
+    r.lead.experience.map((job: any) => job.title),
+    ['Founder, CEO'],
+  );
+});
+
+test('pricing resource: a contract account reads its negotiated prices, not a tier', async () => {
+  const read: Record<string, Function> = {};
+  const server: any = {
+    registerResource: (name: string, _uri: any, _meta: any, handler: Function) => (read[name] = handler),
+  };
+  const book = (b: any) => async () => ({ prices: {}, ...b });
+  const note = async (b: any) => {
+    registerResources(server, {
+      fetcher: fetch,
+      apiBase: 'https://api.test',
+      resolveAuthHeader: async () => 'Token k',
+      apiHeaders: () => ({}),
+      priceBook: book(b),
+    });
+    const res = await read['generect-pricing'](new URL('generect://account/pricing'), {});
+    return JSON.parse(res.contents[0].text).note;
+  };
+  assert.match(await note({ account_specific: true, tiered: false, tier: null }), /negotiated prices/);
+  assert.match(await note({ account_specific: true, tiered: true, tier: '1' }), /account tier/);
+  assert.match(await note({ account_specific: false }), /published list prices/);
 });
 
 test('get_lead_by_url: the same work history', async () => {

@@ -823,7 +823,8 @@ function compactLead(lead: any) {
  * descriptions that would cost the model far more than the card needs.
  */
 function compactPerson(lead: any) {
-  const jobs: any[] = Array.isArray(lead.jobs) ? lead.jobs : [];
+  // A null in jobs must not turn a lookup that was already charged into an error.
+  const jobs: any[] = Array.isArray(lead.jobs) ? lead.jobs.filter((job: any) => job && typeof job === 'object') : [];
   return {
     ...compactLead(lead),
     experience: jobs.slice(0, 10).map(job => ({

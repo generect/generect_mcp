@@ -311,6 +311,23 @@ test('leads from preview: names and titles from first_name, last_name and title'
   assert.match(leadsView({}, { leads: [{ id: 'p2' }] }, ui()), /Unnamed/);
 });
 
+test('profile timeline: a null or a string among the jobs is skipped, the card still renders', () => {
+  const html = profileView(
+    'enrich_lead',
+    {
+      found: true,
+      lead: {
+        id: 'x',
+        full_name: 'A B',
+        jobs: [null, 'x', { job_title: 'CEO', company_name: 'Generect', job_started_on: 'Nov 2021' }],
+      },
+    },
+    {},
+  );
+  assert.match(html, /CEO/);
+  assert.match(html, /2021 – now/);
+});
+
 test('profile timeline: the summary keys, the raw API keys, and no "now" for a job that ended', () => {
   const html = (experience: any[]) =>
     profileView('enrich_lead', { found: true, lead: { id: 'x', full_name: 'A B', experience } }, {});

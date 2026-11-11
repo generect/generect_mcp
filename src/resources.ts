@@ -114,7 +114,7 @@ export function registerResources(server: McpServer, deps: ResourceDeps): void {
     {
       title: 'Your per-operation prices',
       description:
-        "This account's real price for every operation, read from its spend tier. These are the numbers to quote to a user; the prices in tool descriptions and in the public docs are list prices and have not always matched what is billed.",
+        "This account's real price for every operation, read from its spend tier or its negotiated prices. These are the numbers to quote to a user; the prices in tool descriptions and in the public docs are list prices and have not always matched what is billed.",
       mimeType: 'application/json',
     },
     async (uri: URL, extra: any) => {
@@ -126,9 +126,11 @@ export function registerResources(server: McpServer, deps: ResourceDeps): void {
           prices_usd: book.prices,
           account_specific: book.account_specific,
           tier: book.tier ?? null,
-          note: book.account_specific
-            ? 'Read from this account tier.'
-            : 'Could not read the account tier; these are published list prices.',
+          note: !book.account_specific
+            ? 'Could not read the account tier; these are published list prices.'
+            : book.tiered === false
+              ? "Read from this account's negotiated prices (no spend tier)."
+              : 'Read from this account tier.',
         });
       } catch (err) {
         return json(uri.href, { error: String(err) });
