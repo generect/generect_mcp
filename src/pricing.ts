@@ -113,7 +113,7 @@ function priceOf(value: unknown): number | null {
   const number =
     typeof value === 'number'
       ? value
-      : typeof value === 'string' && /^\s*\d+(\.\d+)?(e[-+]?\d+)?\s*$/i.test(value)
+      : typeof value === 'string' && /^\s*(\d+\.?\d*|\.\d+)(e[-+]?\d+)?\s*$/i.test(value)
         ? Number(value)
         : NaN;
   return Number.isFinite(number) && number >= 0 ? number : null;

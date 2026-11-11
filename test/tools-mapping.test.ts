@@ -1643,7 +1643,17 @@ test('price book: a price written as a decimal string still counts, as before 0.
     {
       match: /tiers\/my-tier/,
       body: {
-        current_tier: { name: '3', service_prices: { api_cached: '0.0100', phones: 'n/a', api_preview: '1E-3' } },
+        current_tier: {
+          name: '3',
+          service_prices: {
+            api_cached: '0.0100',
+            api_preview: '1E-3',
+            api_email_finder: '.01',
+            api_email_validation: '5.',
+            phones: 'n/a',
+            api_realtime: '0x10',
+          },
+        },
       },
     },
     ACCOUNT_ME,
@@ -1651,7 +1661,11 @@ test('price book: a price written as a decimal string still counts, as before 0.
   const r = out(await tools.get_balance({}, EXTRA));
   assert.equal(r.your_prices_usd.search_database, 0.01);
   assert.equal(r.your_prices_usd.preview, 0.001);
+  assert.equal(r.your_prices_usd.email_find, 0.01);
+  assert.equal(r.your_prices_usd.email_validate, 5);
+  // Not a decimal: the list price, never NaN, $0 or 16.
   assert.equal(r.your_prices_usd.phone_find, listPrice('phone_find'));
+  assert.equal(r.your_prices_usd.search_realtime, listPrice('search_realtime'));
   const strings: any = Object.fromEntries(
     Object.entries(apiPrices(0.01)).map(([key, value]) => [key, { ...value, price: String(value.price) }]),
   );
