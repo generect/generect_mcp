@@ -213,6 +213,18 @@ export interface LeadRow {
   linkedin_url?: string | null;
 }
 
+/**
+ * A lead row whatever tool it came from. Preview rows carry first_name, last_name and
+ * title instead of full_name and job_title (PRO-1666 QA: the card said "Unnamed" and
+ * the table's Name column was empty while Claude and the XLSX had the names).
+ */
+export function asLeadRow(l: any): LeadRow {
+  if (!l || typeof l !== 'object') return {};
+  const full_name = l.full_name ?? ([l.first_name, l.last_name].filter(Boolean).join(' ') || null);
+  const job_title = l.job_title ?? l.title ?? null;
+  return full_name === l.full_name && job_title === l.job_title ? l : { ...l, full_name, job_title };
+}
+
 export interface EmailState {
   [leadId: string]: { status: 'busy' | 'found' | 'miss' | 'error'; email?: string; note?: string };
 }
@@ -248,7 +260,7 @@ function matches(l: LeadRow, filter: string): boolean {
 export function leadsView(args: any, data: any, ui: LeadsUi, fmt: Fmt = {}): string {
   const issue = problem(data);
   if (issue) return problemCard('Leads', issue);
-  const leads: LeadRow[] = Array.isArray(data.leads) ? data.leads : [];
+  const leads: LeadRow[] = Array.isArray(data.leads) ? data.leads.map(asLeadRow) : [];
   const total = data.results_count;
   const sub = `${num(leads.length, fmt)}${typeof total === 'number' ? ` of ${num(total, fmt)}` : ''} · ${
     modeLabel(data.mode) || 'Generect'
@@ -360,7 +372,7 @@ export function leadsCsv(leads: LeadRow[], emails: EmailState): string {
     return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
   };
   const lines = [cols.join(',')];
-  leads.forEach((l: any, i) => {
+  leads.map(asLeadRow).forEach((l: any, i) => {
     const e = emails[leadKey(l, i)];
     lines.push(cols.map(c => q(c === 'work_email' ? (e?.status === 'found' ? e.email : '') : l[c])).join(','));
   });
@@ -461,11 +473,15 @@ export function profileView(
   const exps: any[] = (pick(l, 'experiences', 'experience', 'jobs') as any[]) ?? [];
   const timeline = Array.isArray(exps)
     ? exps
+        .filter(e => e && typeof e === 'object')
         .slice(0, 4)
         .map(e => {
+          // The summary's started_on/ended_on/current (PRO-1666) or the raw API job's job_* keys.
+          const current = e.current ?? e.job_still_working;
           const span = [
-            yearOf(e.start_date ?? e.starts_at ?? e.date_from),
-            yearOf(e.end_date ?? e.ends_at ?? e.date_to) || 'now',
+            yearOf(e.started_on ?? e.job_started_on ?? e.start_date ?? e.starts_at ?? e.date_from),
+            yearOf(e.ended_on ?? e.job_ended_on ?? e.end_date ?? e.ends_at ?? e.date_to) ||
+              (current === false ? '' : 'now'),
           ]
             .filter(Boolean)
             .join(' – ');
@@ -568,7 +584,7 @@ export function balanceView(data: any, fmt: Fmt = {}): string {
   }</div>${split}${
     prices
       ? `<div class="section-title">${
-          /^account tier/.test(String(data.prices_source ?? '')) || data.prices_source == null
+          /^account (tier|prices)/.test(String(data.prices_source ?? '')) || data.prices_source == null
             ? 'Your prices'
             : 'List prices (your account tier could not be read)'
         }</div><div class="facts">${prices}</div>`

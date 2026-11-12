@@ -12,6 +12,7 @@ import {
   type McpUiHostContext,
 } from '@modelcontextprotocol/ext-apps';
 import {
+  asLeadRow,
   audienceView,
   balanceView,
   companiesView,
@@ -140,7 +141,7 @@ function render() {
 }
 
 function leads(): LeadRow[] {
-  return Array.isArray(state.data?.leads) ? state.data.leads : [];
+  return Array.isArray(state.data?.leads) ? state.data.leads.map(asLeadRow) : [];
 }
 
 function say(text: string) {
@@ -177,7 +178,7 @@ async function emailPrice(): Promise<number | null> {
     const r = structured(await app.callServerTool({ name: 'get_balance', arguments: {} }));
     // get_balance falls back to published list prices when the account tier is
     // unreadable, and says so in prices_source: that is a guess, not this account's price.
-    if (!/^account tier/.test(String(r?.prices_source ?? ''))) return null;
+    if (!/^account (tier|prices)/.test(String(r?.prices_source ?? ''))) return null;
     const p = Number(r?.your_prices_usd?.email_find);
     return Number.isFinite(p) && p >= 0 ? p : null;
   } catch {
