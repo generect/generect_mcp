@@ -78,11 +78,45 @@ const TIER_FIELD_TO_OPS: Record<string, Operation[]> = {
   api_profile_resolve: ['profile_resolve'],
 };
 
+// my-tier `api_prices` (PRO-1666) -> our operations. Per API v1 operation, the price one
+// unit is charged at, by the conversion the charge itself calls: on a tier, a contract or
+// neither. `service_prices` above are tier coefficients times base prices, an input the
+// charge also reads but not the whole rule, and a contract account has no tier at all.
+// The API prices lead endpoints where leads and companies have separate price fields;
+// one operation here covers both.
+const API_PRICE_TO_OPS: Record<string, Operation[]> = {
+  database: ['search_database'],
+  realtime: ['search_realtime', 'count_realtime'],
+  enrich_database: ['enrich_database'],
+  enrich_realtime: ['enrich_realtime'],
+  email_finder: ['email_find'],
+  email_validation: ['email_validate'],
+  phones: ['phone_find'],
+  preview: ['preview'],
+  profile_resolve: ['profile_resolve'],
+};
+
 export interface PriceBook {
   prices: Record<Operation, number>;
   /** true when the numbers came from the account's own tier, not the fallback list. */
   account_specific: boolean;
   tier?: string | null;
+  /** On a spend tier (a contract account has none): what the price label says. */
+  tiered?: boolean;
+}
+
+/**
+ * A price from the API, or null. A non-negative number, or one written as a decimal
+ * string (as a Django Decimal can be sent): never null, "" or junk read as $0.
+ */
+function priceOf(value: unknown): number | null {
+  const number =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\s*(\d+\.?\d*|\.\d+)(e[-+]?\d+)?\s*$/i.test(value)
+        ? Number(value)
+        : NaN;
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 const FALLBACK_BOOK: PriceBook = { prices: { ...LIST_PRICE_USD }, account_specific: false, tier: null };
@@ -124,7 +158,7 @@ export async function fetchPriceBook(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetcher(`${apiBase}/api/auth/tiers/my-tier/`, {
+    const res = await fetcher(`${apiBase}/api/auth/tiers/my-tier/?include=api_prices`, {
       method: 'GET',
       headers: { ...headers, Authorization: authorization },
       signal: controller.signal,
@@ -132,15 +166,30 @@ export async function fetchPriceBook(
     if (!res.ok) return FALLBACK_BOOK;
     const data: any = await res.json();
     const svc = data?.current_tier?.service_prices;
-    if (!svc || typeof svc !== 'object') return FALLBACK_BOOK;
+    const api = data?.api_prices;
+    const tiered = Boolean(svc) && typeof svc === 'object';
+    const charged = Boolean(api) && typeof api === 'object';
+    // Without a tier (a contract account) nothing else fills a gap, and a list price
+    // must not be quoted as the account's own: all of them, or the honest fallback.
+    const complete = charged && Object.keys(API_PRICE_TO_OPS).every(key => priceOf(api[key]?.price) !== null);
+    if (!tiered && !complete) return FALLBACK_BOOK;
     const prices = { ...LIST_PRICE_USD };
-    for (const [field, ops] of Object.entries(TIER_FIELD_TO_OPS)) {
-      const value = Number(svc[field]);
-      if (Number.isFinite(value) && value >= 0) for (const op of ops) prices[op] = value;
+    if (tiered) {
+      for (const [field, ops] of Object.entries(TIER_FIELD_TO_OPS)) {
+        const value = priceOf(svc[field]);
+        if (value !== null) for (const op of ops) prices[op] = value;
+      }
+    }
+    // The charge's own numbers win over the tier's inputs wherever the API gives them.
+    if (charged) {
+      for (const [key, ops] of Object.entries(API_PRICE_TO_OPS)) {
+        const value = priceOf(api[key]?.price);
+        if (value !== null) for (const op of ops) prices[op] = value;
+      }
     }
     prices.count_database = 0; // free by contract, whatever the tier says
     prices.search_thin = 0; // same: the thin tier writes no transaction at all
-    const book: PriceBook = { prices, account_specific: true, tier: data?.current_tier?.name ?? null };
+    const book: PriceBook = { prices, account_specific: true, tier: data?.current_tier?.name ?? null, tiered };
     cache.set(key, { book, ts: Date.now() });
     return book;
   } catch {
