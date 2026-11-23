@@ -315,6 +315,43 @@ test('generate_email: single lookup by lead_id and cost is summed from the API r
   assert.equal(r.results[0].email, 'a@b.com');
 });
 
+test('generate_email: a "Probably valid" address is passed through, free, and the receipt says why (PRO-2027)', async () => {
+  const fetcher = async (url: string, init: any = {}) => {
+    if (/tiers/.test(url)) return new Response(JSON.stringify(TIER), { status: 200 });
+    const body =
+      JSON.parse(init.body).lead_id === 'a'
+        ? {
+            data: { valid_email: 'a@b.com', exist: 'yes', email_status: 'catchall_unverified' },
+            meta: { amount_charged: 0 },
+          }
+        : { data: { valid_email: 'c@d.com', exist: 'yes', email_status: 'verified' }, meta: { amount_charged: 0.02 } };
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  resetPriceBookCache();
+  const tools: Record<string, Function> = {};
+  const server: any = { registerTool: (name: string, _c: any, h: Function) => (tools[name] = h) };
+  registerTools(server, fetcher as any, 'https://api.test', '');
+  const r = out(await tools.generate_email({ candidates: [{ lead_id: 'a' }, { lead_id: 'b' }] }, EXTRA));
+  assert.equal(r.cost.amount_charged_usd, 0.02);
+  assert.equal(r.cost.not_billed_probably_valid, 1);
+  assert.match(r.cost.billed, /Probably valid/);
+  assert.equal(r.results[0].email_status, 'catchall_unverified');
+  assert.equal(r.results[0].amount_charged_usd, 0);
+});
+
+test('generate_email: without email_status from the API the receipt keeps the old rule (PRO-2027 not on)', async () => {
+  const { tools } = harness([
+    TIER_ROUTE,
+    {
+      match: /email\/find\//,
+      body: { data: { valid_email: 'a@b.com', exist: 'yes' }, meta: { amount_charged: 0.02 } },
+    },
+  ]);
+  const r = out(await tools.generate_email({ lead_id: 'ACwAAA1' }, EXTRA));
+  assert.equal(r.cost.billed, 'per valid email found (a miss is free)');
+  assert.equal('not_billed_probably_valid' in r.cost, false);
+});
+
 test('generate_email: name+domain form is accepted and middle_name is forwarded', async () => {
   const { tools, calls } = harness([
     TIER_ROUTE,
