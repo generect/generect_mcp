@@ -1934,7 +1934,7 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
   loggedTool(
     registrar,
     'generate_email',
-    `Find and verify a work email. ${priceTag('email_find')} Identifies the person by lead_id (most accurate), LinkedIn URL or first name, last name and domain. \`candidates\` resolves several people in one call; more than 10 go to an async bulk job instead, which returns a job_id for get_bulk_job.`,
+    `Find and verify a work email. ${priceTag('email_find')} Identifies the person by lead_id (most accurate), LinkedIn URL or first name, last name and domain. \`candidates\` resolves several people in one call; more than 10 go to an async bulk job instead, which returns a job_id for get_bulk_job. A result's \`email_status\`, when the API sends it, says how sure the address is: \`verified\`; \`catchall_verified\` (the domain accepts any address, but Microsoft, Google or Mimecast confirmed this mailbox); \`catchall_unverified\` ("Probably valid": the domain accepts any address and nobody confirmed the mailbox). A \`catchall_unverified\` address is delivered and not billed: its amount_charged_usd is 0. Tell the user it is a likely address, not a confirmed one.`,
     {
       ...IDENTIFY_LEAD,
       middle_name: z.string().describe('Middle name (optional, improves pattern matching).').optional(),
@@ -2000,12 +2000,19 @@ export function registerTools(server: McpServer, fetcher: Fetcher, apiBase: stri
           }),
         );
         const spent = settled.reduce((sum, r: any) => sum + (Number(r.amount_charged_usd) || 0), 0);
+        // PRO-2027: the API sends email_status once "Probably valid" addresses are free, and only then
+        // does the receipt say so; before that, the old rule is still the one billed.
+        const statusSent = settled.some((r: any) => r && 'email_status' in r);
+        const probablyValid = settled.filter((r: any) => r?.email_status === 'catchall_unverified').length;
         return result({
           requested: targets.length,
           cost: {
             operation: 'email_find',
             amount_charged_usd: round(spent),
-            billed: 'per valid email found (a miss is free)',
+            billed: statusSent
+              ? 'per confirmed email found (a miss, and a "Probably valid" address, email_status catchall_unverified, are free)'
+              : 'per valid email found (a miss is free)',
+            ...(probablyValid ? { not_billed_probably_valid: probablyValid } : {}),
           },
           results: settled,
         });
